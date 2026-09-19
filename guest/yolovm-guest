@@ -88,8 +88,8 @@ provision_base() {
   user_dir "$tls"
   [ -s "$tls/rdp-tls.key" ] || as_user openssl req -x509 -newkey rsa:2048 -noenc -days 3650 -subj "/CN=$(hostname)" -keyout "$tls/rdp-tls.key" -out "$tls/rdp-tls.crt" 2>/dev/null
   chmod 0600 "$tls/rdp-tls.key"
-  as_user grdctl rdp set-tls-key "$tls/rdp-tls.key"
-  as_user grdctl rdp set-tls-cert "$tls/rdp-tls.crt"
+  as_user grdctl rdp set-tls-cert "$tls/rdp-tls.crt" 2>/dev/null # grdctl complains about the setting it is about to fill
+  as_user grdctl rdp set-tls-key "$tls/rdp-tls.key" 2>/dev/null
   as_user grdctl rdp disable-view-only
   as_user grdctl rdp enable
 

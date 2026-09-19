@@ -1,60 +1,114 @@
 # yolovm
 
-Persistent Ubuntu 26.04 desktop VMs for coding agents, managed with one command
-on a Linux **host**. Each VM starts with the host, stays logged into its GNOME
-desktop as `ubuntu` with passwordless sudo, and keeps working in the background.
-Any device on your tailnet can open its screen.
+Isolated Ubuntu desktop VMs where AI agents have complete power by default:
+root, a real browser, no permission prompts, and no way into your host or your
+network.
 
-A VM with the `dev` role has the ChatGPT app, Chrome with the ChatGPT and Claude
-extensions, Claude Code with Claude Remote Control running at boot, Git, `gh`
-and Tailscale. Projects live in `/home/ubuntu/proj`.
-
-```text
-yolovm host init [--keep-awake] [--lock-after MIN]
-                               install Incus; define storage, network, ACL, profile and image;
-                               never suspend the host; blank and lock its screen after MIN idle minutes
-yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
-                               launch a VM, provision it, restart it; sizes in GiB
-yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
-yolovm doctor [NAME]           check this host, or a VM
-yolovm desktop NAME            print the remote desktop login; open the VM's screen if this host has one
-yolovm sh NAME [CMD...]        shell in the VM as ubuntu
-yolovm ls | start | stop | restart | snapshot | delete NAME
-                               stop and restart take --force to cut the power
-yolovm version                 print the version
+```bash
+yolovm host init
+yolovm create yolovm-dev-1
+yolovm auth yolovm-dev-1
 ```
 
-Run `./yolovm host init` once from this directory. It links the command into
-`~/.local/bin`, so everything after that is plain `yolovm`; until your next
-login, `./yolovm` from this directory works the same. Steps 1 and 2 happen
-once; steps 3 to 5 once per VM.
+That's it. Pick `yolovm-dev-1` in the Claude app on your phone and tell it what
+to build. The ChatGPT app and the Chrome extensions need one visit to the VM's
+desktop to sign in.
 
-## Why a full desktop VM
+## Why
+
+Agents in yolo mode need a machine they can break, not your laptop. Each yolovm
+is a persistent Ubuntu desktop VM that starts with the host, logs itself in and
+keeps working in the background, while the host and the home network stay out
+of its reach.
 
 Two CLIs over SSH would be far simpler: Codex CLI and Claude Code in a headless
-VM need no GNOME, no Chrome, no autologin and no console. This project takes the
-long way so the agents have what a person at the machine has: the ChatGPT app
-with its own browser, and computer use when it reaches Linux; Claude Code driving
-a real signed-in Chrome through its extension; and a complete computer they may
-install anything on, with the host and the home network out of reach. The
-alternatives that were weighed are in [docs/research](docs/research).
+VM need no GNOME, no Chrome, no autologin and no console. The desktop is there
+so the agents have what a person at the machine has: the ChatGPT app with its
+own browser, and computer use when it reaches Linux; Claude Code driving a real
+signed-in Chrome through its extension; and a complete computer they may
+install anything on. The alternatives that were weighed are in
+[docs/research](docs/research).
+
+## 0. Prerequisites
+
+- A **host** running Ubuntu 26.04 with GNOME on a 64-bit AMD or Intel machine,
+  with virtualization (AMD SVM or Intel VT-x) enabled in the firmware.
+- A **Tailscale** account. Once per tailnet, before the first VM signs in, open
+  [Tailscale → Access controls](https://login.tailscale.com/admin/acls), select
+  **JSON editor**, replace the default policy with
+  [host/tailscale-policy.json](host/tailscale-policy.json), and save. The policy
+  trusts all tailnet members and blocks outgoing tailnet connections from all
+  tagged devices; VMs enrol with `tag:yolovm`, which also disables their key
+  expiry. For a tailnet with custom rules, merge these settings and remove any
+  existing rules or grants that let tagged devices start connections.
+- **Accounts for the agents:** a GitHub account, ideally a separate one so the
+  agents' commits stay apart from yours; a Claude subscription, since Claude
+  Remote Control is part of the Pro, Max, Team and Enterprise plans; and a
+  ChatGPT account.
+- This repository on the host:
+
+```bash
+git clone https://github.com/tochkov/yolovm && cd yolovm
+```
+
+<details>
+<summary>tailscale-policy.json</summary>
+
+```json
+{
+  "tagOwners": {
+    "tag:yolovm": ["autogroup:admin"]
+  },
+  "grants": [
+    {
+      "src": ["autogroup:member"],
+      "dst": ["*"],
+      "ip": ["*"]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "check",
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:self"],
+      "users": ["autogroup:nonroot", "root"]
+    },
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:yolovm"],
+      "users": ["ubuntu"]
+    }
+  ]
+}
+```
+
+- `tagOwners`: administrators can assign `tag:yolovm`.
+- `grants`: user-owned devices can start connections to any tailnet destination
+  on any port. Tagged VMs do not match the source, so they cannot start any.
+  Replies to incoming connections are allowed.
+- `ssh`: keeps SSH between a user's own devices and lets tailnet members SSH into
+  tagged VMs as `ubuntu`.
+
+Both network policies matter: Incus restricts direct private-network access, and
+Tailscale restricts access through its encrypted tunnel. See
+[Tailscale grants](https://tailscale.com/docs/reference/syntax/grants).
+
+</details>
 
 ## 1. Prepare the host
-
-Assumes Ubuntu 26.04 with GNOME on a 64-bit AMD or Intel machine with
-virtualization (AMD SVM or Intel VT-x) enabled in the firmware.
 
 ```bash
 ./yolovm host init --keep-awake --lock-after 10
 ```
 
-Then **log out of the host and back in** so your Incus access and the `yolovm`
-command on your PATH take effect.
-`--keep-awake` stops the host from suspending on its own, which would stop the
-VMs. `--lock-after 10` blanks and locks its screen after ten idle minutes, and
-`0` means never. Leave either out to keep your own settings. **Super+L** locks
-the host at once; a locked host keeps its VMs running.
+This first call needs the `./`. It links `yolovm` into `~/.local/bin`, so every
+later command is plain `yolovm` once you **log out of the host and back in**,
+which also activates your Incus access. `--keep-awake` stops the host from
+suspending on its own, which would stop the VMs. `--lock-after 10` blanks and
+locks its screen after ten idle minutes, and `0` means never. Leave either out
+to keep your own settings. **Super+L** locks the host at once; a locked host
+keeps its VMs running.
 
 <details>
 <summary>What host init does</summary>
@@ -150,75 +204,20 @@ egress:
 
 </details>
 
-## 2. Set Tailscale access
-
-Once per tailnet, before signing in a VM. Open
-[Tailscale → Access controls](https://login.tailscale.com/admin/acls), select
-**JSON editor**, replace the default policy with
-[host/tailscale-policy.json](host/tailscale-policy.json), and save. For a
-tailnet with custom rules, merge these settings and remove any existing rules or
-grants that let tagged devices start connections.
-
-The policy trusts all tailnet members and blocks outgoing tailnet connections
-from all tagged devices. Keep your personal computers user-owned; VMs enrol with
-`tag:yolovm`, which also disables their key expiry.
-
-<details>
-<summary>tailscale-policy.json</summary>
-
-```json
-{
-  "tagOwners": {
-    "tag:yolovm": ["autogroup:admin"]
-  },
-  "grants": [
-    {
-      "src": ["autogroup:member"],
-      "dst": ["*"],
-      "ip": ["*"]
-    }
-  ],
-  "ssh": [
-    {
-      "action": "check",
-      "src": ["autogroup:member"],
-      "dst": ["autogroup:self"],
-      "users": ["autogroup:nonroot", "root"]
-    },
-    {
-      "action": "accept",
-      "src": ["autogroup:member"],
-      "dst": ["tag:yolovm"],
-      "users": ["ubuntu"]
-    }
-  ]
-}
-```
-
-- `tagOwners`: administrators can assign `tag:yolovm`.
-- `grants`: user-owned devices can start connections to any tailnet destination
-  on any port. Tagged VMs do not match the source, so they cannot start any.
-  Replies to incoming connections are allowed.
-- `ssh`: keeps SSH between a user's own devices and lets tailnet members SSH into
-  tagged VMs as `ubuntu`.
-
-Both network policies matter: Incus restricts direct private-network access, and
-Tailscale restricts access through its encrypted tunnel. See
-[Tailscale grants](https://tailscale.com/docs/reference/syntax/grants).
-
-</details>
-
-## 3. Create a VM
+## 2. Create a VM
 
 ```bash
 yolovm create yolovm-dev-1
 ```
 
-This launches `yolovm-dev-1` from the local `yolovm-desktop` image with the
-`yolovm-dev` profile, waits for the guest, provisions the `dev` role and
-restarts. It takes a few minutes. The VM gets 4 CPUs, 8 GiB of memory and a
-50 GiB disk unless `--cpu`, `--mem` and `--disk` say otherwise, in GiB:
-`--cpu 4 --mem 16 --disk 100`. Disk space is used as data is written.
+This launches the VM from the local Ubuntu 26.04 Desktop image, waits for it,
+provisions the `dev` role and restarts it. It takes a few minutes. The VM gets
+4 CPUs, 8 GiB of memory and a 50 GiB disk, which uses space only as data is
+written. To choose, in GiB:
+
+```bash
+yolovm create yolovm-dev-1 --cpu 4 --mem 16 --disk 100
+```
 
 <details>
 <summary>What provisioning does</summary>
@@ -235,7 +234,6 @@ what differs.
 | --- | --- |
 | System | Disables networkd's unused wait-online service, which otherwise delays boot; sets GNOME to never blank or suspend, marks its first-login wizards as done, and hides Ubuntu's crash-report pop-ups, which `doctor` lists instead; applies pending package updates; installs Git and `gh`. |
 | Keyring | Creates the desktop keyring without a password. With automatic login nothing can unlock one, so the first app that needs it, Chrome or the ChatGPT app, would ask you to invent a password. Secrets in it are unencrypted on disk, like everything else on a VM whose login has no password. |
-| Remote desktop | Turns on GNOME's built-in Desktop Sharing, which mirrors the live session over RDP: a self-signed certificate named after the VM, remote control allowed (GNOME's default is view-only), and the service started with every session. `auth` sets the password the first time. Only the tailnet and the host can reach the port. |
 | Tailscale | Installs Tailscale and enables its service. |
 | Instructions | Writes [guest/base/instructions.md](guest/base/instructions.md) to `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` and creates `~/proj`. |
 | Claude Code | Installs the CLI on the stable channel; merges [guest/base/claude-settings.json](guest/base/claude-settings.json) into `~/.claude/settings.json`; pre-answers the three first-run dialogs in `~/.claude.json` so only the login remains; installs the Claude Remote Control service. |
@@ -262,15 +260,14 @@ what differs.
 **What starts at boot**
 
 The VM starts with the host (`boot.autostart`), logs into GNOME, and the
-session starts the remote desktop service, the ChatGPT app, Chrome, and Claude
-Remote Control,
+session starts three things: the ChatGPT app, Chrome, and Claude Remote Control,
 the part of Claude Code that lets claude.ai/code and the Claude mobile app drive
-sessions on this VM, run by the service below. Tailscale reconnects on its own and, being tagged, never expires.
-Nothing needs a hand after a reboot.
+sessions on this VM, run by the service below. Tailscale reconnects on its own
+and, being tagged, never expires. Nothing needs a hand after a reboot.
 
 ```ini
 [Unit]
-Description=Claude Code Remote Control
+Description=Claude Remote Control
 After=graphical-session.target
 PartOf=graphical-session.target
 
@@ -290,7 +287,7 @@ reach the journal. Until the Claude login exists it retries every ten seconds.
 
 </details>
 
-## 4. Sign in
+## 3. Sign in
 
 ```bash
 yolovm auth yolovm-dev-1
@@ -306,81 +303,88 @@ enter the code if asked, and the credentials stay inside the VM:
   login becomes both the commit name and the commit email.
 - **Claude** signs the CLI in; paste the code the page shows. Claude Remote
   Control connects within ten seconds.
-- **Remote desktop** gets a random password; `auth` ends by printing the login.
 
-Then open the desktop for the two sign-ins that only work there. Over SSH this
-prints the remote desktop login; with a screen it also opens the VM's window.
+Then open the desktop for the two sign-ins that only work there:
 
 ```bash
 yolovm desktop yolovm-dev-1
 ```
-
-From a laptop or phone on the tailnet, connect a Remote Desktop client to
-`yolovm-dev-1` as `ubuntu` with that password. The free Windows App does this on
-macOS, Windows, iOS and Android; accept the VM's certificate once. It shows the
-same live screen, at the resolution set in the VM's Settings → Displays. Closing
-the window or the client leaves the VM and its applications running.
 
 1. **ChatGPT:** sign in, open `/home/ubuntu/proj` in Codex, and check that its
    permission selector shows Full access.
 2. **Chrome:** sign into the ChatGPT and Claude extensions, then finish ChatGPT's
    [browser connection setup](https://learn.chatgpt.com/docs/chrome-extension).
 
-## 5. Check and use
+## 4. Get in
+
+|         | From the host          | From anywhere on your tailnet |
+| ------- | ---------------------- | ----------------------------- |
+| Shell   | `yolovm sh yolovm-dev-1` | `ssh ubuntu@yolovm-dev-1` |
+| Desktop | `yolovm desktop yolovm-dev-1` | not yet |
+| Claude  | | [claude.ai/code](https://claude.ai/code) and the Claude mobile app |
+
+Shell and desktop from the host go through Incus and need no network. SSH goes
+through Tailscale SSH, so no keys are needed. `yolovm sh NAME 'command'` runs
+one command. Closing the viewer, the shell or the host terminal leaves the VM
+and its applications running.
+
+## 5. Check a VM
 
 ```bash
 yolovm doctor yolovm-dev-1
 ```
 
 The report is grouped into apps, boot, sign-in, settings and network, and ends
-with a count. Every line should read `ok`. The network probes expect the internet to answer
-and both the host's bridge address and an online personal device on the
-tailnet to stay silent. A timeout alone does not say which firewall blocked a
-packet, so the doctor uses addresses that would answer without the policies.
-
-Open [claude.ai/code](https://claude.ai/code) or the Claude mobile app and pick
-`yolovm-dev-1`. The host terminal can close; the VM keeps working.
+with a count. Every line should read `ok`. The network probes expect the
+internet to answer and both the host's bridge address and an online personal
+device on the tailnet to stay silent. A timeout alone does not say which
+firewall blocked a packet, so the doctor uses addresses that would answer
+without the policies. Months later, a sign-in that expired shows up here, and
+`yolovm auth NAME` repairs it. `yolovm doctor` alone checks the host.
 
 ## Day to day
 
-| Task | Command |
-| --- | --- |
-| Check a VM, including whether any login expired | `yolovm doctor NAME` |
-| Sign in again where needed | `yolovm auth NAME` |
-| Apply changes made under `guest/` | `yolovm provision NAME` |
-| Shell as ubuntu, or run one command | `yolovm sh NAME` or `yolovm sh NAME 'uptime'` |
-| See the desktop | `yolovm desktop NAME` |
-| See the desktop from a laptop or phone | Windows App to `NAME`, user `ubuntu`; `yolovm desktop NAME` prints the password |
-| Snapshot before something risky | `yolovm snapshot NAME` |
-| List, start, stop, restart, delete | `yolovm ls`, `yolovm stop NAME`, ... |
-| Cut the power of a VM that will not shut down | `yolovm stop NAME --force`, also for `restart` |
+```text
+yolovm host init [--keep-awake] [--lock-after MIN]
+                               install Incus; define storage, network, ACL, profile and image;
+                               never suspend the host; blank and lock its screen after MIN idle minutes
+yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
+                               launch a VM, provision it, restart it; sizes in GiB
+yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
+yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing
+yolovm doctor [NAME]           check this host, or a VM
+yolovm desktop NAME            open the VM's screen
+yolovm sh NAME [CMD...]        shell in the VM as ubuntu
+yolovm ls | start | stop | restart | snapshot | delete NAME
+                               stop and restart take --force to cut the power
+yolovm version                 print the version
+```
 
 `stop` and `restart` first let the desktop apps close, then power the VM off
 from inside, ignoring the desktop's shutdown inhibitors. A plain power-off kills
 a browser and its helper processes at once, which Chrome and the ChatGPT app
-report as a crash after the next boot. With `--force` they cut the power instead.
+report as a crash after the next boot. With `--force` they cut the power
+instead. `snapshot` before something risky; `provision` after editing anything
+under `guest/`.
 
-Everything here works over SSH to the host. A laptop can create a VM, sign it in
-with the links opened in its own browser, and then open the desktop with its
-Remote Desktop client, without the host's screen.
-
-Repeat step 3 for more VMs. VMs on the `yolovm-dev` profile cannot talk to each
-other on the bridge, and with the Tailscale policy they cannot start connections
-to each other through the tailnet either.
+Repeat steps 2 and 3 for more VMs. VMs on the `yolovm-dev` profile cannot talk
+to each other on the bridge, and with the Tailscale policy they cannot start
+connections to each other through the tailnet either.
 
 ## Layout
 
 ```text
 yolovm                 host command
 host/                  Zabbly source, Incus preseed, network ACL, Tailscale policy
-guest/yolovm-guest     runs inside a VM: provision | auth | desktop | status | poweroff
+guest/yolovm-guest     runs inside a VM: provision | auth | status | poweroff
 guest/base/            instructions, GNOME settings, Claude settings, Claude Remote Control unit
 guest/roles/dev/       ChatGPT and Chrome autostart, Chrome policies, Codex config
 docs/                  research and earlier drafts
 ```
 
-A new role is a `provision_NAME` function in `guest/yolovm-guest` with a
-matching `status_NAME`, plus its files under `guest/roles/NAME/`.
+A new role is a `provision_NAME` function in `guest/yolovm-guest` with matching
+`status_NAME_apps`, `status_NAME_boot` and `status_NAME_settings` functions,
+plus its files under `guest/roles/NAME/`.
 
 ## Versions
 
