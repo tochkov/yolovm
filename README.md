@@ -31,30 +31,37 @@ install anything on. The alternatives that were weighed are in
 
 ## 0. Prerequisites
 
-- A **host** running Ubuntu 26.04 with GNOME on a 64-bit AMD or Intel machine,
-  with virtualization (AMD SVM or Intel VT-x) enabled in the firmware.
-- A **Tailscale** account. Once per tailnet, before the first VM signs in, open
-  [Tailscale → Access controls](https://login.tailscale.com/admin/acls), select
-  **JSON editor**, replace the default policy with
-  [host/tailscale-policy.json](host/tailscale-policy.json), and save. The policy
-  trusts all tailnet members and blocks outgoing tailnet connections from all
-  tagged devices; VMs enrol with `tag:yolovm`, which also disables their key
-  expiry. For a tailnet with custom rules, merge these settings and remove any
-  existing rules or grants that let tagged devices start connections.
-- **Accounts for the agents:** a GitHub account, ideally a separate one so the
-  agents' commits stay apart from yours; a Claude subscription, since Claude
-  Remote Control is part of the Pro, Max, Team and Enterprise plans; and a
-  ChatGPT account.
-- This repository on the host, with the command linked into `~/.local/bin` so
-  that it is `yolovm` rather than `./yolovm` from here on. Ubuntu puts
-  `~/.local/bin` on your PATH at the next login; the `export` covers the current
-  terminal. This is a workaround until yolovm gets a proper install.
+**A host.** Ubuntu 26.04 with GNOME on a 64-bit AMD or Intel machine, with
+virtualization (AMD SVM or Intel VT-x) enabled in the firmware.
+
+**Accounts.** Tailscale; a GitHub account for the agents, ideally separate from
+yours; a Claude subscription with Claude Remote Control, which is part of the
+Pro, Max, Team and Enterprise plans; a ChatGPT account.
+
+**The Tailscale policy**, once per tailnet, before the first VM signs in: open
+[Tailscale → Access controls](https://login.tailscale.com/admin/acls), select
+**JSON editor**, replace the default policy with
+[host/tailscale-policy.json](host/tailscale-policy.json), and save. It trusts
+all tailnet members and blocks outgoing tailnet connections from tagged
+devices; VMs enrol with `tag:yolovm`.
+
+**This repository**, on the host:
 
 ```bash
 git clone https://github.com/tochkov/yolovm && cd yolovm
+```
+
+Then put the command on your PATH:
+
+```bash
 mkdir -p ~/.local/bin && ln -sfn "$PWD/yolovm" ~/.local/bin/yolovm
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+The link makes it `yolovm` instead of `./yolovm` from here on; the `export`
+makes that work in the current terminal, and Ubuntu adds `~/.local/bin` to your
+PATH by itself at the next login. This is a workaround until yolovm has a proper
+installer.
 
 <details>
 <summary>tailscale-policy.json</summary>
@@ -94,6 +101,10 @@ export PATH="$HOME/.local/bin:$PATH"
   Replies to incoming connections are allowed.
 - `ssh`: keeps SSH between a user's own devices and lets tailnet members SSH into
   tagged VMs as `ubuntu`.
+
+Tagged devices also have no key expiry. For a tailnet with custom rules, merge
+these settings and remove any existing rules or grants that let tagged devices
+start connections.
 
 Both network policies matter: Incus restricts direct private-network access, and
 Tailscale restricts access through its encrypted tunnel. See
