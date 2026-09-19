@@ -318,7 +318,8 @@ enter the code if asked, and the credentials stay inside the VM:
   Control connects within ten seconds.
 
 It ends with the remote desktop login: the user `ubuntu` and a random password
-set once per VM, which `yolovm desktop NAME` prints again.
+set once per VM, which `yolovm desktop NAME` prints again. `--no-tailscale`,
+`--no-gh` and `--no-claude` skip a service you do not want.
 
 Then open the desktop for the two sign-ins that only work there:
 
@@ -375,7 +376,9 @@ yolovm host init [--keep-awake] [--lock-after MIN]
 yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
                                launch a VM, provision it, restart it; sizes in GiB
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; print the desktop login
+yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude]
+                               sign in to Tailscale, GitHub and Claude where missing, or skip some;
+                               print the desktop login
 yolovm doctor [NAME]           check this host, or a VM
 yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu

@@ -3,7 +3,8 @@
 # it over `incus exec`; it also works from a shell inside the VM.
 #
 #   yolovm-guest provision [ROLE]   install and configure; safe to run again
-#   yolovm-guest auth               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
+#   yolovm-guest auth [--no-tailscale] [--no-gh] [--no-claude]
+#                                   sign in to Tailscale, GitHub and Claude where missing, or skip some; set the desktop password
 #   yolovm-guest desktop            print the remote desktop login, setting its password the first time
 #   yolovm-guest status             check apps, boot services, logins, settings, network
 #   yolovm-guest poweroff           close desktop apps cleanly, then power off
@@ -143,7 +144,22 @@ provision() {
 }
 
 # --------------------------------------------------------------------- auth
-auth() {
+auth() { # --no-tailscale, --no-gh and --no-claude each skip a sign-in
+  local tailscale=1 gh=1 claude=1 a
+  for a in "$@"; do case $a in
+    --no-tailscale) tailscale=0 ;;
+    --no-gh) gh=0 ;;
+    --no-claude) claude=0 ;;
+    *) echo "unknown option: $a" >&2; exit 1 ;;
+  esac; done
+  # `if`, not `||`: bash suspends errexit inside a function called from a || list
+  if [ $tailscale = 1 ]; then auth_tailscale; fi
+  if [ $gh = 1 ]; then auth_github; fi
+  if [ $claude = 1 ]; then auth_claude; fi
+  say "Remote desktop"
+  desktop
+}
+auth_tailscale() {
   say "Tailscale"
   if tailscale_tagged >/dev/null 2>&1; then tailscale set --ssh
   else tailscale up --ssh --advertise-tags=$TAG; fi
@@ -152,7 +168,8 @@ auth() {
     return 1
   fi
   echo "connected with $TAG; SSH enabled"
-
+}
+auth_github() {
   say "GitHub"
   if as_user gh auth status >/dev/null 2>&1; then echo "already signed in as $(as_user gh api user --jq .login)"
   else
@@ -162,13 +179,11 @@ auth() {
   local login id; login=$(as_user gh api user --jq .login); id=$(as_user gh api user --jq .id)
   as_user git config --global user.name "$login"
   as_user git config --global user.email "$id+$login@users.noreply.github.com" # GitHub's address for the account, so commits count as its own
-
+}
+auth_claude() {
   say "Claude"
   if as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then echo "already signed in"
   else as_user claude auth login; fi
-
-  say "Remote desktop"
-  desktop
 }
 
 # ------------------------------------------------------------------ desktop
@@ -286,7 +301,7 @@ status_dev_settings() {
 
 case ${1:-} in
   provision) provision "${2:-}" ;;
-  auth) auth ;;
+  auth) shift; auth "$@" ;;
   desktop) desktop ;;
   status) status ;;
   poweroff) poweroff ;;
