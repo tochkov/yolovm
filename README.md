@@ -45,10 +45,15 @@ install anything on. The alternatives that were weighed are in
   agents' commits stay apart from yours; a Claude subscription, since Claude
   Remote Control is part of the Pro, Max, Team and Enterprise plans; and a
   ChatGPT account.
-- This repository on the host:
+- This repository on the host, with the command linked into `~/.local/bin` so
+  that it is `yolovm` rather than `./yolovm` from here on. Ubuntu puts
+  `~/.local/bin` on your PATH at the next login; the `export` covers the current
+  terminal. This is a workaround until yolovm gets a proper install.
 
 ```bash
 git clone https://github.com/tochkov/yolovm && cd yolovm
+mkdir -p ~/.local/bin && ln -sfn "$PWD/yolovm" ~/.local/bin/yolovm
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 <details>
@@ -99,12 +104,11 @@ Tailscale restricts access through its encrypted tunnel. See
 ## 1. Prepare the host
 
 ```bash
-./yolovm host init --keep-awake --lock-after 10
+yolovm host init --keep-awake --lock-after 10
 ```
 
-This first call needs the `./`. It links `yolovm` into `~/.local/bin`, so every
-later command is plain `yolovm` once you **log out of the host and back in**,
-which also activates your Incus access. `--keep-awake` stops the host from
+Then **log out of the host and back in** to activate your Incus access.
+`--keep-awake` stops the host from
 suspending on its own, which would stop the VMs. `--lock-after 10` blanks and
 locks its screen after ten idle minutes, and `0` means never. Leave either out
 to keep your own settings. **Super+L** locks the host at once; a locked host
@@ -117,8 +121,7 @@ keeps its VMs running.
 2. Installs Incus 7.0 LTS from [Zabbly](https://github.com/zabbly/incus#installation),
    whose package includes QEMU, plus `virt-viewer` for the VM screen, using
    [host/zabbly-incus.sources](host/zabbly-incus.sources).
-3. Enables `incus.socket` and `incus-startup.service`, adds you to `incus-admin`,
-   and links `yolovm` into `~/.local/bin`.
+3. Enables `incus.socket` and `incus-startup.service` and adds you to `incus-admin`.
 4. Loads [host/incus-preseed.yaml](host/incus-preseed.yaml). Incus merges it
    into an existing setup, so the command is safe to repeat.
 
@@ -207,17 +210,13 @@ egress:
 ## 2. Create a VM
 
 ```bash
-yolovm create yolovm-dev-1
+yolovm create yolovm-dev-1 --cpu 4 --mem 16 --disk 100
 ```
 
 This launches the VM from the local Ubuntu 26.04 Desktop image, waits for it,
-provisions the `dev` role and restarts it. It takes a few minutes. The VM gets
-4 CPUs, 8 GiB of memory and a 50 GiB disk, which uses space only as data is
-written. To choose, in GiB:
-
-```bash
-yolovm create yolovm-dev-1 --cpu 4 --mem 16 --disk 100
-```
+provisions the `dev` role and restarts it. It takes a few minutes. Memory and
+disk are in GiB, and all three options can be left out (defaults: 4 CPUs,
+8 GiB memory, 50 GiB disk, which uses space only as data is written).
 
 <details>
 <summary>What provisioning does</summary>
@@ -320,13 +319,19 @@ yolovm desktop yolovm-dev-1
 |         | From the host          | From anywhere on your tailnet |
 | ------- | ---------------------- | ----------------------------- |
 | Shell   | `yolovm sh yolovm-dev-1` | `ssh ubuntu@yolovm-dev-1` |
-| Desktop | `yolovm desktop yolovm-dev-1` | not yet |
+| Desktop | `yolovm desktop yolovm-dev-1` | any RDP client to `yolovm-dev-1`, see below |
 | Claude  | | [claude.ai/code](https://claude.ai/code) and the Claude mobile app |
 
 Shell and desktop from the host go through Incus and need no network. SSH goes
 through Tailscale SSH, so no keys are needed. `yolovm sh NAME 'command'` runs
 one command. Closing the viewer, the shell or the host terminal leaves the VM
 and its applications running.
+
+Remote desktop is GNOME's own RDP sharing, switched on by hand for now: on the
+VM's desktop open Settings → System → Remote Desktop → Desktop Sharing, enable
+sharing and remote control, and set a login name and password. Then any RDP
+client on your tailnet, such as Windows App on macOS or Remmina on Linux,
+connects to the VM's name on port 3389 with those details.
 
 ## 5. Check a VM
 

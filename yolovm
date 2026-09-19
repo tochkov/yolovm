@@ -75,9 +75,6 @@ host_init() {
   sudo incus network set $NET security.acls=$ACL
   say "Ubuntu desktop image, kept up to date in the local store"
   sudo incus image info $ALIAS >/dev/null 2>&1 || sudo incus image copy $IMAGE local: --alias $ALIAS --auto-update
-  say "The yolovm command"
-  install -d "$HOME/.local/bin" && ln -sfn "$HERE/yolovm" "$HOME/.local/bin/yolovm"
-  case :$PATH: in *":$HOME/.local/bin:"*) ;; *) echo "~/.local/bin joins your PATH at the next login; until then run: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;; esac
   if [ $awake = 1 ]; then
     say "Host power: never suspend, so the VMs keep running"
     gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'

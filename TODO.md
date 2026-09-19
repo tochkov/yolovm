@@ -10,8 +10,8 @@
   like `yolovm`. Not in focus now.
 - [ ] A per-host config file for what is hard-coded today: default CPU, memory
   and disk, the role, Chrome's search engine.
-- [ ] Remote desktop from other devices, for example GNOME Remote Desktop over
-  Tailscale, so the "Get in" table has no empty cell.
+- [ ] Set up GNOME's RDP desktop sharing during provisioning instead of by hand:
+  `grdctl rdp enable`, generated credentials shown once, TLS certificate.
 - [ ] Doctor polish, later: colour for `ok` and `!!` when on a terminal, and a
   verbose mode that prints versions.
 - [ ] Add roles beyond `dev` (research, news): `provision_NAME` plus
