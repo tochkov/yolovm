@@ -134,7 +134,7 @@ keeps its VMs running.
    [host/zabbly-incus.sources](host/zabbly-incus.sources).
 3. Enables `incus.socket` and `incus-startup.service` and adds you to `incus-admin`.
 4. Loads [host/incus-preseed.yaml](host/incus-preseed.yaml). Incus merges it
-   into an existing setup, so the command is safe to repeat.
+   into an existing setup; yolovm preserves the bridge's existing subnet on repeat runs.
 
 ```yaml
 config: {} # Keep Incus's global defaults.
@@ -358,12 +358,13 @@ yolovm doctor yolovm-dev-1
 ```
 
 The report is grouped into apps, boot, sign-in, settings and network, and ends
-with a count. Every line should read `ok`. The network probes expect the
-internet to answer and both the host's bridge address and an online personal
-device on the tailnet to stay silent. A timeout alone does not say which
-firewall blocked a packet, so the doctor uses addresses that would answer
-without the policies. Months later, a sign-in that expired shows up here, and
-`yolovm auth NAME` repairs it. `yolovm doctor` alone checks the host.
+with counts of passed, failed and skipped checks. `!!` means a failure; `--`
+means a check could not be attempted. Ping probes expect the internet to answer
+and the host's bridge address and an online personal tailnet device not to
+answer. No reply is the expected result, but does not prove firewall isolation;
+probe errors are failures, and a missing tailnet peer is a skip. Expired sign-ins
+show up here too; `yolovm auth NAME` repairs them. `yolovm doctor` alone checks
+the host.
 
 ## Day to day
 
@@ -380,7 +381,7 @@ yolovm desktop NAME            print the remote desktop login; open the VM's scr
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 yolovm ls | start | stop | restart | snapshot | delete NAME
                                stop and restart take --force to cut the power;
-                               delete logs the VM out of the tailnet, then removes it
+                               delete attempts Tailscale logout, then removes the VM
 yolovm version                 print the version
 ```
 
@@ -391,11 +392,10 @@ report as a crash after the next boot. With `--force` they cut the power
 instead. `snapshot` before something risky; `provision`, then `restart`, after
 editing anything under `guest/`.
 
-`delete` logs the VM out of the tailnet, so its key expires at once, then
-removes it whether it is running or not. Tailscale keeps the machine listed as
-expired: remove it in [Tailscale → Machines](https://login.tailscale.com/admin/machines),
-or the next VM created with that name gets a numbered name such as
-`yolovm-dev-1-1`.
+`delete` attempts Tailscale logout if the VM is running, then removes the VM.
+It reports whether logout succeeded or was skipped or failed. Remove the machine
+in [Tailscale → Machines](https://login.tailscale.com/admin/machines) before
+reusing its name, or the next VM gets a numbered name such as `yolovm-dev-1-1`.
 
 Repeat steps 2 and 3 for more VMs. VMs on the `yolovm-dev` profile cannot talk
 to each other on the bridge, and with the Tailscale policy they cannot start

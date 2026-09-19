@@ -145,8 +145,13 @@ provision() {
 # --------------------------------------------------------------------- auth
 auth() {
   say "Tailscale"
-  if tailscale status --json 2>/dev/null | grep -q '"BackendState": "Running"'; then echo "already connected"
+  if tailscale_tagged >/dev/null 2>&1; then tailscale set --ssh
   else tailscale up --ssh --advertise-tags=$TAG; fi
+  if ! tailscale_tagged >/dev/null 2>&1; then
+    echo "Tailscale must be connected with $TAG. Check the tag and its permissions in Tailscale → Machines / Access controls, then rerun auth." >&2
+    return 1
+  fi
+  echo "connected with $TAG; SSH enabled"
 
   say "GitHub"
   if as_user gh auth status >/dev/null 2>&1; then echo "already signed in as $(as_user gh api user --jq .login)"
@@ -200,23 +205,33 @@ claude_bypasses() { python3 -c "import json;assert json.load(open('$H/.claude/se
 claude_dialogs_answered() { python3 -c "import json;d=json.load(open('$H/.claude.json'));assert d['hasCompletedOnboarding'] and d['remoteDialogSeen'] and d['projects']['$PROJ']['hasTrustDialogAccepted']"; }
 claude_signed_in() { as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; }
 tailscale_tagged() { tailscale status --json | python3 -c "import json,sys;s=json.load(sys.stdin);assert s['BackendState']=='Running' and '$TAG' in (s['Self'].get('Tags') or [])"; }
-online_user_peer() { tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(next((p['TailscaleIPs'][0]+' '+p['HostName'] for p in (json.load(sys.stdin).get('Peer') or {}).values() if p.get('Online') and not p.get('Tags')),''))" 2>/dev/null || true; }
+online_user_peer() { tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(next((p['TailscaleIPs'][0]+' '+p['HostName'] for p in (json.load(sys.stdin).get('Peer') or {}).values() if p.get('Online') and not p.get('Tags')),''))" 2>/dev/null; }
 keyring_opens() { as_user gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.Unlock "['/org/freedesktop/secrets/collection/Default_5fkeyring']" | grep -q "objectpath '/')"; } # unlocks with no prompt
 rdp_listening() { ss -Hltn 'sport = :3389' | grep -q .; }
 rdp_controls() { [ "$(as_user gsettings get org.gnome.desktop.remote-desktop.rdp view-only)" = false ]; }
 crashes_since_boot() { find /var/crash -name '*.crash' -newer /proc/1 2>/dev/null | sed 's|.*/_||; s|\.[0-9]*\.crash$||; s|_|/|g' | tr '\n' ' '; }
-blocked() { ! ping -c1 -W2 "$1"; }
+check_no_ping_reply() {
+  local label=$1 address=$2 result=0; N=$((N+1))
+  if [ -z "$address" ]; then bad "$label: no address to probe"; return; fi
+  ping -c1 -W2 "$address" >/dev/null 2>&1 || result=$?
+  case $result in
+    0) bad "$label ($address): answered ping; expected no reply" ;;
+    1) ok "$label ($address): no ping reply, as expected" ;;
+    *) bad "$label ($address): ping could not complete (exit $result)" ;;
+  esac
+}
 chrome_is_default() { [ "$(as_user xdg-settings get default-web-browser 2>/dev/null)" = google-chrome.desktop ]; }
 codex_full_access() { grep -qx 'approval_policy = "never"' $H/.codex/config.toml && grep -qx 'sandbox_mode = "danger-full-access"' $H/.codex/config.toml; }
 
 ok() { printf '  ok   %s\n' "$*"; }
 bad() { printf '  !!   %s\n' "$*"; FAIL=$((FAIL+1)); }
+skip() { printf '  --   %s (skipped)\n' "$*"; N=$((N+1)); SKIP=$((SKIP+1)); }
 check() { local msg=$1; shift; N=$((N+1)); if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
 section() { printf '\n%s\n' "$*"; }
 role_checks() { declare -F "status_${ROLE}_$1" >/dev/null && "status_${ROLE}_$1"; return 0; } # a role adds checks per section
 
 status() {
-  ROLE=$(cat $ROLE_FILE 2>/dev/null || echo none); N=0; FAIL=0
+  ROLE=$(cat $ROLE_FILE 2>/dev/null || echo none); N=0; FAIL=0; SKIP=0
   echo "$(hostname) · role $ROLE · provisioned by yolovm $(cat /etc/yolovm/version 2>/dev/null || echo unknown)"
   section "Apps"
   for c in git gh tailscale; do check "$c installed" command -v $c; done
@@ -242,13 +257,17 @@ status() {
   check "remote desktop allows control" rdp_controls
   role_checks settings
   section "Network"
-  local gw peer; gw=$(ip -4 route show default | awk '{print $3; exit}')
-  check "internet reachable" ping -c1 -W3 1.1.1.1
-  check "host gateway $gw blocked" blocked "$gw"
-  peer=$(online_user_peer)
-  if [ -n "$peer" ]; then check "tailnet peer ${peer#* } ${peer%% *} blocked" blocked "${peer%% *}"; else echo "  --   tailnet peer check skipped: no user device online, or not on the tailnet yet"; fi
+  echo "  Ping results alone do not verify firewall isolation."
+  local gw peer; gw=$(ip -4 route show default | awk '{print $3; exit}') || gw=
+  check "internet responds to ping (1.1.1.1)" ping -c1 -W3 1.1.1.1
+  check_no_ping_reply "host gateway" "$gw"
+  if ! peer=$(online_user_peer); then
+    N=$((N+1)); bad "tailnet peer: could not read Tailscale status"
+  elif [ -n "$peer" ]; then check_no_ping_reply "tailnet peer ${peer#* }" "${peer%% *}"
+  else skip "tailnet peer: no online user device to probe"; fi
   echo
-  if [ $FAIL = 0 ]; then echo "$N checks, all ok"; else echo "$FAIL of $N checks failed"; return 1; fi
+  echo "$N checks: $((N-FAIL-SKIP)) passed, $FAIL failed, $SKIP skipped"
+  [ "$FAIL" = 0 ]
 }
 
 status_dev_apps() {

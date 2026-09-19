@@ -13,7 +13,7 @@
 #   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 #   yolovm ls | start | stop | restart | snapshot | delete NAME
 #                                  stop and restart take --force to cut the power;
-#                                  delete logs the VM out of the tailnet, then removes it
+#                                  delete attempts Tailscale logout, then removes the VM
 #   yolovm version                 print the version
 #
 # Once per tailnet, before signing a VM in, apply host/tailscale-policy.json in
@@ -50,11 +50,14 @@ restart() { # clean shutdown and start; --force cuts the power
   local name= force= a; for a in "$@"; do if [ "$a" = --force ]; then force=--force; else name=$a; fi; done
   need_name "$name"; stop "$name" $force; incus start "$name"; wait_agent "$name"
 }
-delete() { # expire the VM's tailnet key by logging it out, then remove it, running or not
+delete() { # try to log out of Tailscale, then remove the VM, running or not
   need_name "${1:-}"
-  [ "$(state "$1")" = RUNNING ] && { incus exec "$1" -- tailscale logout >/dev/null 2>&1 || true; }
+  local logged_out=0
+  if [ "$(state "$1")" = RUNNING ] && incus exec "$1" -- tailscale logout >/dev/null 2>&1; then logged_out=1; fi
   incus delete --force "$1"
-  say "Deleted $1. Tailscale keeps it listed as expired: remove it in the admin console, or a new VM named $1 gets a numbered name"
+  say "Deleted $1"
+  if [ "$logged_out" = 1 ]; then echo "Tailscale logout succeeded."; else echo "Tailscale logout was skipped or failed."; fi
+  echo "Remove $1 in Tailscale → Machines before reusing its name: https://login.tailscale.com/admin/machines"
 }
 
 host_init() {
@@ -77,7 +80,13 @@ host_init() {
   sudo systemctl enable --now incus.socket incus-startup.service
   id -nG | grep -qw incus-admin || { sudo usermod -aG incus-admin "$USER"; echo "Added $USER to incus-admin: log out and back in to use yolovm without sudo."; }
   say "Storage, network, ACL and profile"
-  sudo incus admin init --preseed < "$HERE/host/incus-preseed.yaml"
+  # `auto` chooses a new subnet each time; preserve an existing bridge address.
+  local address=auto networks; networks=$(sudo incus network list -c n -f csv)
+  if grep -qx "$NET" <<< "$networks"; then
+    address=$(sudo incus network get "$NET" ipv4.address)
+    [ -n "$address" ] || die "$NET has no IPv4 address; refusing to choose a new subnet"
+  fi
+  sed "s|ipv4.address: auto|ipv4.address: $address|" "$HERE/host/incus-preseed.yaml" | sudo incus admin init --preseed
   if sudo incus network acl show $ACL >/dev/null 2>&1; then sudo incus network acl edit $ACL < "$HERE/host/network-acl.yaml"
   else sudo incus network acl create $ACL < "$HERE/host/network-acl.yaml"; fi
   sudo incus network set $NET security.acls=$ACL
@@ -147,7 +156,8 @@ doctor_host() {
   check "ACL $ACL attached to $NET" grep -qw $ACL <(incus network get $NET security.acls)
   check "image $ALIAS in the local store" incus image info $ALIAS
   check "yolovm on PATH" command -v yolovm
-  if [ $fail = 0 ]; then echo "$n checks, all ok"; else echo "$fail of $n checks failed"; return 1; fi
+  echo "$n checks: $((n-fail)) passed, $fail failed"
+  [ "$fail" = 0 ]
 }
 
 shell() {
