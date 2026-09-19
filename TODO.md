@@ -20,3 +20,8 @@
   machine identity first.
 - [ ] Optional: `yolovm tailnet` to apply `host/tailscale-policy.json` through
   the Tailscale API instead of the admin console.
+- [ ] When the stable channel passes 2.1.278, look at `claude remote-control
+  --chrome`: it appeared between 2.1.272 and 2.1.278 and only forwards `--chrome`
+  to the sessions the server starts, which `CLAUDE_CODE_ENABLE_CFC=1` in the unit
+  already does on every version. On stable 2.1.267 it is an unknown argument that
+  would crash-loop the unit, so it is a readability choice for later, not a need.

@@ -2,7 +2,9 @@
 # Claude mobile app drive sessions on this VM. Starts with the desktop session,
 # is named after the VM, grants all permissions and opens sessions in ~/proj.
 # Its status display is redrawn every second, so stdout is discarded; errors
-# still reach the journal.
+# still reach the journal. CLAUDE_CODE_ENABLE_CFC turns on Claude in Chrome for
+# the sessions it starts, which run headless and would otherwise ignore the
+# default set in ~/.claude.json.
 [Unit]
 Description=Claude Remote Control
 After=graphical-session.target
@@ -10,6 +12,7 @@ PartOf=graphical-session.target
 
 [Service]
 WorkingDirectory=%h/proj
+Environment=CLAUDE_CODE_ENABLE_CFC=1
 ExecStart=%h/.local/bin/claude remote-control --name %H --permission-mode bypassPermissions
 StandardOutput=null
 Restart=always

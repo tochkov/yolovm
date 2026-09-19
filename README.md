@@ -247,7 +247,7 @@ what differs.
 | Remote desktop | Enables GNOME's Desktop Sharing over RDP with remote control and a self-signed certificate, so the service starts with every session. `auth` sets a random password the first time, and `auth` and `desktop` print the login. |
 | Tailscale | Installs Tailscale and enables its service. |
 | Instructions | Writes [guest/base/instructions.md](guest/base/instructions.md) to `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` and creates `~/proj`. |
-| Claude Code | Installs the CLI on the stable channel; merges [guest/base/claude-settings.json](guest/base/claude-settings.json) into `~/.claude/settings.json`; pre-answers the three first-run dialogs in `~/.claude.json` so only the login remains; installs the Claude Remote Control service. |
+| Claude Code | Installs the CLI on the stable channel; merges [guest/base/claude-settings.json](guest/base/claude-settings.json) into `~/.claude/settings.json`; pre-answers the first-run dialogs in `~/.claude.json` so only the login remains, and enables Claude in Chrome by default; installs the Claude Remote Control service. |
 
 ```json
 {
@@ -285,6 +285,7 @@ PartOf=graphical-session.target
 
 [Service]
 WorkingDirectory=%h/proj
+Environment=CLAUDE_CODE_ENABLE_CFC=1
 ExecStart=%h/.local/bin/claude remote-control --name %H --permission-mode bypassPermissions
 StandardOutput=null
 Restart=always
@@ -296,6 +297,8 @@ WantedBy=graphical-session.target
 
 Its status display redraws every second, so stdout is discarded; errors still
 reach the journal. Until the Claude login exists it retries every ten seconds.
+`CLAUDE_CODE_ENABLE_CFC` turns on Claude in Chrome for the sessions it starts,
+which run headless and would otherwise ignore the default in `~/.claude.json`.
 
 </details>
 
@@ -329,8 +332,13 @@ yolovm desktop yolovm-dev-1
 
 1. **ChatGPT:** sign in, open `/home/ubuntu/proj` in Codex, and check that its
    permission selector shows Full access.
-2. **Chrome:** sign into the ChatGPT and Claude extensions, then finish ChatGPT's
+2. **Chrome:** sign into the ChatGPT and Claude extensions, the Claude one with
+   the same account as Claude Code, then finish ChatGPT's
    [browser connection setup](https://learn.chatgpt.com/docs/chrome-extension).
+
+Claude Code writes Chrome's native messaging host during the first session that
+uses the browser. If `/chrome` then shows the extension as not detected, restart
+Chrome once.
 
 ## 4. Get in
 

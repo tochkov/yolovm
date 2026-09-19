@@ -22,7 +22,7 @@
 # the Tailscale admin console (see README.md).
 set -euo pipefail
 
-VERSION=0.4.0
+VERSION=0.4.1
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
 ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
