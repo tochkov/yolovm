@@ -3,12 +3,14 @@
 # it over `incus exec`; it also works from a shell inside the VM.
 #
 #   yolovm-guest provision [ROLE]   install and configure; safe to run again
-#   yolovm-guest auth               sign in to Tailscale, GitHub and Claude where missing
+#   yolovm-guest auth               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
+#   yolovm-guest desktop            print the remote desktop login, setting its password the first time
 #   yolovm-guest status             check apps, boot services, logins, settings, network
 #   yolovm-guest poweroff           close desktop apps cleanly, then power off
 #
 # Base gives every VM: agent instructions, an always-on desktop without password
-# prompts, Tailscale, Git and gh, Claude Code with Claude Remote Control at boot.
+# prompts that other devices can open over RDP, Tailscale, Git and gh, Claude
+# Code with Claude Remote Control at boot.
 # A role adds apps on top.
 # Role dev: the ChatGPT app and Chrome with the ChatGPT and Claude extensions.
 set -euo pipefail
@@ -77,6 +79,20 @@ provision_base() {
     chown $U:$U "$kr/Default_keyring.keyring" "$kr/default" && chmod 0600 "$kr/Default_keyring.keyring" "$kr/default"
   fi
 
+  say "Base: remote desktop"
+  # GNOME's built-in Desktop Sharing mirrors the live session over RDP. It needs
+  # a TLS certificate, allows viewing only by default, and `enable` also starts
+  # its service with every session. `desktop` sets the password once the keyring
+  # is loaded, after the first restart.
+  local tls=$H/.local/share/gnome-remote-desktop
+  user_dir "$tls"
+  [ -s "$tls/rdp-tls.key" ] || as_user openssl req -x509 -newkey rsa:2048 -noenc -days 3650 -subj "/CN=$(hostname)" -keyout "$tls/rdp-tls.key" -out "$tls/rdp-tls.crt" 2>/dev/null
+  chmod 0600 "$tls/rdp-tls.key"
+  as_user grdctl rdp set-tls-key "$tls/rdp-tls.key"
+  as_user grdctl rdp set-tls-cert "$tls/rdp-tls.crt"
+  as_user grdctl rdp disable-view-only
+  as_user grdctl rdp enable
+
   say "Base: Claude Code with Claude Remote Control at boot"
   [ -x "$H/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | as_user bash -s stable
   merge_json "$H/.claude/settings.json" "$(cat "$HERE/base/claude-settings.json")"
@@ -97,6 +113,8 @@ provision_dev() {
   install -d /etc/opt/chrome/policies/managed && rm -f /etc/opt/chrome/policies/managed/yolovm.json
   for f in "$HERE"/roles/dev/chrome-*.json; do install -m 0644 "$f" "/etc/opt/chrome/policies/managed/yolovm-${f##*/chrome-}"; done
   as_user xdg-mime default google-chrome.desktop x-scheme-handler/http x-scheme-handler/https text/html application/xhtml+xml
+  user_dir -m 0700 "$H/.config/google-chrome" # Chrome's first-run marker: no terms dialog, no welcome page
+  touch "$H/.config/google-chrome/First Run" && chown $U:$U "$H/.config/google-chrome/First Run"
   user_dir "$H/.config/autostart"
   user_file "$HERE/roles/dev/chatgpt.desktop" "$H/.config/autostart/chatgpt.desktop"
   user_file "$HERE/roles/dev/google-chrome.desktop" "$H/.config/autostart/google-chrome.desktop"
@@ -143,6 +161,21 @@ auth() {
   say "Claude"
   if as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then echo "already signed in"
   else as_user claude auth login; fi
+
+  say "Remote desktop"
+  desktop
+}
+
+# ------------------------------------------------------------------ desktop
+rdp_password() { as_user grdctl status --show-credentials 2>/dev/null | sed -n 's/^\s*Password: //p' | grep -v '^(null)$' || true; }
+desktop() { # the remote desktop login; sets a random password the first time
+  local password; password=$(rdp_password)
+  if [ -z "$password" ]; then
+    as_user grdctl rdp set-credentials $U "$(openssl rand -hex 6)"
+    password=$(rdp_password)
+  fi
+  echo "Remote desktop: connect an RDP client, such as Windows App, to $(hostname)"
+  printf '  user      %s\n  password  %s\n' $U "$password"
 }
 
 # ----------------------------------------------------------------- poweroff
@@ -169,6 +202,8 @@ claude_signed_in() { as_user claude auth status 2>/dev/null | grep -q '"loggedIn
 tailscale_tagged() { tailscale status --json | python3 -c "import json,sys;s=json.load(sys.stdin);assert s['BackendState']=='Running' and '$TAG' in (s['Self'].get('Tags') or [])"; }
 online_user_peer() { tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(next((p['TailscaleIPs'][0]+' '+p['HostName'] for p in (json.load(sys.stdin).get('Peer') or {}).values() if p.get('Online') and not p.get('Tags')),''))" 2>/dev/null || true; }
 keyring_opens() { as_user gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.Unlock "['/org/freedesktop/secrets/collection/Default_5fkeyring']" | grep -q "objectpath '/')"; } # unlocks with no prompt
+rdp_listening() { ss -Hltn 'sport = :3389' | grep -q .; }
+rdp_controls() { [ "$(as_user gsettings get org.gnome.desktop.remote-desktop.rdp view-only)" = false ]; }
 crashes_since_boot() { find /var/crash -name '*.crash' -newer /proc/1 2>/dev/null | sed 's|.*/_||; s|\.[0-9]*\.crash$||; s|_|/|g' | tr '\n' ' '; }
 blocked() { ! ping -c1 -W2 "$1"; }
 chrome_is_default() { [ "$(as_user xdg-settings get default-web-browser 2>/dev/null)" = google-chrome.desktop ]; }
@@ -191,6 +226,7 @@ status() {
   check "networkd wait-online disabled" wait_online_disabled
   check "keyring opens without a password prompt" keyring_opens
   check "claude remote control running" user_unit is-active claude-remote-control.service
+  check "remote desktop listening on port 3389" rdp_listening
   role_checks boot
   local crashes; crashes=$(crashes_since_boot); N=$((N+1))
   if [ -z "$crashes" ]; then ok "no app crashes since boot"; else bad "app crashes since boot, see /var/crash: $crashes"; fi
@@ -198,10 +234,12 @@ status() {
   check "tailscale connected with $TAG" tailscale_tagged
   check "github signed in" as_user gh auth status
   check "claude signed in" claude_signed_in
+  check "remote desktop password set" test -n "$(rdp_password)"
   section "Settings"
   check "agent instructions present" test -s $H/.claude/CLAUDE.md -a -s $H/.codex/AGENTS.md
   check "claude permissions bypassed" claude_bypasses
   check "claude first-run dialogs pre-answered" claude_dialogs_answered
+  check "remote desktop allows control" rdp_controls
   role_checks settings
   section "Network"
   local gw peer; gw=$(ip -4 route show default | awk '{print $3; exit}')
@@ -230,7 +268,8 @@ status_dev_settings() {
 case ${1:-} in
   provision) provision "${2:-}" ;;
   auth) auth ;;
+  desktop) desktop ;;
   status) status ;;
   poweroff) poweroff ;;
-  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

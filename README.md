@@ -3,6 +3,7 @@
 Persistent Ubuntu 26.04 desktop VMs for coding agents, managed with one command
 on a Linux **host**. Each VM starts with the host, stays logged into its GNOME
 desktop as `ubuntu` with passwordless sudo, and keeps working in the background.
+Any device on your tailnet can open its screen.
 
 A VM with the `dev` role has the ChatGPT app, Chrome with the ChatGPT and Claude
 extensions, Claude Code with Claude Remote Control running at boot, Git, `gh`
@@ -15,9 +16,9 @@ yolovm host init [--keep-awake] [--lock-after MIN]
 yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
                                launch a VM, provision it, restart it; sizes in GiB
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing
+yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
 yolovm doctor [NAME]           check this host, or a VM
-yolovm desktop NAME            open the VM's screen
+yolovm desktop NAME            print the remote desktop login; open the VM's screen if this host has one
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 yolovm ls | start | stop | restart | snapshot | delete NAME
                                stop and restart take --force to cut the power
@@ -234,6 +235,7 @@ what differs.
 | --- | --- |
 | System | Disables networkd's unused wait-online service, which otherwise delays boot; sets GNOME to never blank or suspend, marks its first-login wizards as done, and hides Ubuntu's crash-report pop-ups, which `doctor` lists instead; applies pending package updates; installs Git and `gh`. |
 | Keyring | Creates the desktop keyring without a password. With automatic login nothing can unlock one, so the first app that needs it, Chrome or the ChatGPT app, would ask you to invent a password. Secrets in it are unencrypted on disk, like everything else on a VM whose login has no password. |
+| Remote desktop | Turns on GNOME's built-in Desktop Sharing, which mirrors the live session over RDP: a self-signed certificate named after the VM, remote control allowed (GNOME's default is view-only), and the service started with every session. `auth` sets the password the first time. Only the tailnet and the host can reach the port. |
 | Tailscale | Installs Tailscale and enables its service. |
 | Instructions | Writes [guest/base/instructions.md](guest/base/instructions.md) to `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` and creates `~/proj`. |
 | Claude Code | Installs the CLI on the stable channel; merges [guest/base/claude-settings.json](guest/base/claude-settings.json) into `~/.claude/settings.json`; pre-answers the three first-run dialogs in `~/.claude.json` so only the login remains; installs the Claude Remote Control service. |
@@ -253,14 +255,15 @@ what differs.
 | Part | What it does |
 | --- | --- |
 | Apps | Installs the ChatGPT app and Chrome from their official packages, which also register their update repositories. |
-| Chrome | Makes Chrome the default browser and installs two policy files under `/etc/opt/chrome/policies/managed`. [chrome-extensions.json](guest/roles/dev/chrome-extensions.json) adds the [ChatGPT](https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg) and [Claude](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn) extensions when Chrome starts; `normal_installed` lets you disable them. [chrome-settings.json](guest/roles/dev/chrome-settings.json) makes Google the search engine, which also skips the search-engine choice screen; turns off browser sign-in and its prompt, the welcome tabs, the default-browser nag, the ad-privacy prompt and usage reporting; blocks notification and location requests from sites and never offers to save passwords; restores the last session at start; and keeps Chrome running when its windows close so the extensions stay available. Edit that file and run `yolovm provision NAME` to change any of it. |
+| Chrome | Makes Chrome the default browser, marks its first run as done so the terms dialog and welcome page never appear, and installs two policy files under `/etc/opt/chrome/policies/managed`. [chrome-extensions.json](guest/roles/dev/chrome-extensions.json) adds the [ChatGPT](https://chromewebstore.google.com/detail/chatgpt/hehggadaopoacecdllhhajmbjkdcmajg) and [Claude](https://chromewebstore.google.com/detail/claude/fcoeoabgfenejglbffodgkkbkcdhcgfn) extensions when Chrome starts; `normal_installed` lets you disable them. [chrome-settings.json](guest/roles/dev/chrome-settings.json) makes Google the search engine, which also skips the search-engine choice screen; turns off browser sign-in and its prompt, the welcome tabs, the default-browser nag, the ad-privacy prompt and usage reporting; blocks notification and location requests from sites and never offers to save passwords; restores the last session at start; and keeps Chrome running when its windows close so the extensions stay available. Edit that file and run `yolovm provision NAME` to change any of it. |
 | Codex | Sets `approval_policy = "never"` and `sandbox_mode = "danger-full-access"` in `~/.codex/config.toml`, keeping whatever the app adds. The app's permission selector can still override them. |
 | Boot | Adds autostart entries so the ChatGPT app and Chrome open with the desktop session. |
 
 **What starts at boot**
 
 The VM starts with the host (`boot.autostart`), logs into GNOME, and the
-session starts three things: the ChatGPT app, Chrome, and Claude Remote Control,
+session starts the remote desktop service, the ChatGPT app, Chrome, and Claude
+Remote Control,
 the part of Claude Code that lets claude.ai/code and the Claude mobile app drive
 sessions on this VM, run by the service below. Tailscale reconnects on its own and, being tagged, never expires.
 Nothing needs a hand after a reboot.
@@ -303,13 +306,20 @@ enter the code if asked, and the credentials stay inside the VM:
   login becomes both the commit name and the commit email.
 - **Claude** signs the CLI in; paste the code the page shows. Claude Remote
   Control connects within ten seconds.
+- **Remote desktop** gets a random password; `auth` ends by printing the login.
 
-Then open the desktop for the two sign-ins that only work there. Closing the
-viewer leaves the VM and its applications running.
+Then open the desktop for the two sign-ins that only work there. Over SSH this
+prints the remote desktop login; with a screen it also opens the VM's window.
 
 ```bash
 yolovm desktop yolovm-dev-1
 ```
+
+From a laptop or phone on the tailnet, connect a Remote Desktop client to
+`yolovm-dev-1` as `ubuntu` with that password. The free Windows App does this on
+macOS, Windows, iOS and Android; accept the VM's certificate once. It shows the
+same live screen, at the resolution set in the VM's Settings → Displays. Closing
+the window or the client leaves the VM and its applications running.
 
 1. **ChatGPT:** sign in, open `/home/ubuntu/proj` in Codex, and check that its
    permission selector shows Full access.
@@ -340,6 +350,7 @@ Open [claude.ai/code](https://claude.ai/code) or the Claude mobile app and pick
 | Apply changes made under `guest/` | `yolovm provision NAME` |
 | Shell as ubuntu, or run one command | `yolovm sh NAME` or `yolovm sh NAME 'uptime'` |
 | See the desktop | `yolovm desktop NAME` |
+| See the desktop from a laptop or phone | Windows App to `NAME`, user `ubuntu`; `yolovm desktop NAME` prints the password |
 | Snapshot before something risky | `yolovm snapshot NAME` |
 | List, start, stop, restart, delete | `yolovm ls`, `yolovm stop NAME`, ... |
 | Cut the power of a VM that will not shut down | `yolovm stop NAME --force`, also for `restart` |
@@ -348,6 +359,10 @@ Open [claude.ai/code](https://claude.ai/code) or the Claude mobile app and pick
 from inside, ignoring the desktop's shutdown inhibitors. A plain power-off kills
 a browser and its helper processes at once, which Chrome and the ChatGPT app
 report as a crash after the next boot. With `--force` they cut the power instead.
+
+Everything here works over SSH to the host. A laptop can create a VM, sign it in
+with the links opened in its own browser, and then open the desktop with its
+Remote Desktop client, without the host's screen.
 
 Repeat step 3 for more VMs. VMs on the `yolovm-dev` profile cannot talk to each
 other on the bridge, and with the Tailscale policy they cannot start connections
@@ -358,7 +373,7 @@ to each other through the tailnet either.
 ```text
 yolovm                 host command
 host/                  Zabbly source, Incus preseed, network ACL, Tailscale policy
-guest/yolovm-guest     runs inside a VM: provision | auth | status
+guest/yolovm-guest     runs inside a VM: provision | auth | desktop | status | poweroff
 guest/base/            instructions, GNOME settings, Claude settings, Claude Remote Control unit
 guest/roles/dev/       ChatGPT and Chrome autostart, Chrome policies, Codex config
 docs/                  research and earlier drafts

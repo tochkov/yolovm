@@ -7,9 +7,9 @@
 #   yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
 #                                  launch a VM, provision it, restart it; sizes in GiB
 #   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-#   yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing
+#   yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
 #   yolovm doctor [NAME]           check this host, or a VM
-#   yolovm desktop NAME            open the VM's screen
+#   yolovm desktop NAME            print the remote desktop login; open the VM's screen if this host has one
 #   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 #   yolovm ls | start | stop | restart | snapshot | delete NAME
 #                                  stop and restart take --force to cut the power
@@ -142,13 +142,19 @@ shell() {
   if [ $# -gt 0 ]; then incus exec "$name" -- runuser -l ubuntu -c "$*"; else incus exec -t "$name" -- runuser -l ubuntu; fi
 }
 
+desktop() { # the RDP login works from any device on the tailnet; the viewer needs a screen here
+  need_name "${1:-}"
+  incus exec "$1" -- $GUEST/yolovm-guest desktop
+  if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then incus console "$1" --type vga; fi
+}
+
 case ${1:-} in
   host) [ "${2:-}" = init ] || die "usage: yolovm host init [--keep-awake] [--lock-after MIN]"; shift 2; host_init "$@" ;;
   create) shift; create "$@" ;;
   provision) provision "${2:-}" "${3:-}" ;;
   auth) need_name "${2:-}"; incus exec -t "$2" -- $GUEST/yolovm-guest auth ;;
   doctor) if [ -n "${2:-}" ]; then incus exec "$2" -- $GUEST/yolovm-guest status; else doctor_host; fi ;;
-  desktop) need_name "${2:-}"; incus console "$2" --type vga ;;
+  desktop) desktop "${2:-}" ;;
   sh) shift; shell "$@" ;;
   ls) incus list ;;
   start) need_name "${2:-}"; incus start "$2"; wait_agent "$2" ;;
