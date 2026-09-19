@@ -1,7 +1,9 @@
 #!/bin/bash
 # yolovm: persistent Ubuntu desktop VMs for coding agents, on this host.
 #
-#   yolovm host init [--power]     install Incus; define storage, network, ACL, profile and image
+#   yolovm host init [--keep-awake] [--lock-after MIN]
+#                                  install Incus; define storage, network, ACL, profile and image;
+#                                  never suspend the host; blank and lock its screen after MIN idle minutes
 #   yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
 #                                  launch a VM, provision it, restart it; sizes in GiB
 #   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
@@ -17,7 +19,7 @@
 # the Tailscale admin console (see README.md).
 set -euo pipefail
 
-VERSION=0.1.0
+VERSION=0.2.0
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
 ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
@@ -49,6 +51,11 @@ restart() { # clean shutdown and start; --force cuts the power
 }
 
 host_init() {
+  local awake=0 lock=; while [ $# -gt 0 ]; do case $1 in
+    --keep-awake) awake=1; shift ;;
+    --lock-after) lock=${2:-}; case $lock in ''|*[!0-9]*) die "--lock-after needs a number of minutes" ;; esac; shift 2 ;;
+    *) die "unknown option: $1" ;;
+  esac; done
   say "Checks"
   [ -e /dev/kvm ] || die "/dev/kvm missing: enable AMD SVM or Intel VT-x in the firmware"
   command -v curl >/dev/null || sudo apt install -y curl ca-certificates
@@ -71,10 +78,13 @@ host_init() {
   say "The yolovm command"
   install -d "$HOME/.local/bin" && ln -sfn "$HERE/yolovm" "$HOME/.local/bin/yolovm"
   case :$PATH: in *":$HOME/.local/bin:"*) ;; *) echo "~/.local/bin joins your PATH at the next login; until then run: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;; esac
-  if [ "${1:-}" = --power ]; then
-    say "Host power: stay awake, blank and lock after ten minutes"
+  if [ $awake = 1 ]; then
+    say "Host power: never suspend, so the VMs keep running"
     gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
-    gsettings set org.gnome.desktop.session idle-delay 600
+  fi
+  if [ -n "$lock" ]; then
+    if [ "$lock" = 0 ]; then say "Host screen: never blank or lock"; else say "Host screen: blank and lock after $lock idle minutes"; fi
+    gsettings set org.gnome.desktop.session idle-delay $((lock * 60))
     gsettings set org.gnome.desktop.lockdown disable-lock-screen false
     gsettings set org.gnome.desktop.screensaver lock-enabled true
     gsettings set org.gnome.desktop.screensaver lock-delay 0
@@ -133,7 +143,7 @@ shell() {
 }
 
 case ${1:-} in
-  host) [ "${2:-}" = init ] || die "usage: yolovm host init [--power]"; host_init "${3:-}" ;;
+  host) [ "${2:-}" = init ] || die "usage: yolovm host init [--keep-awake] [--lock-after MIN]"; shift 2; host_init "$@" ;;
   create) shift; create "$@" ;;
   provision) provision "${2:-}" "${3:-}" ;;
   auth) need_name "${2:-}"; incus exec -t "$2" -- $GUEST/yolovm-guest auth ;;

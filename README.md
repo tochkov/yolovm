@@ -9,7 +9,9 @@ extensions, Claude Code with Claude Remote Control running at boot, Git, `gh`
 and Tailscale. Projects live in `/home/ubuntu/proj`.
 
 ```text
-yolovm host init [--power]     install Incus; define storage, network, ACL, profile and image
+yolovm host init [--keep-awake] [--lock-after MIN]
+                               install Incus; define storage, network, ACL, profile and image;
+                               never suspend the host; blank and lock its screen after MIN idle minutes
 yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
                                launch a VM, provision it, restart it; sizes in GiB
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
@@ -43,14 +45,15 @@ Assumes Ubuntu 26.04 with GNOME on a 64-bit AMD or Intel machine with
 virtualization (AMD SVM or Intel VT-x) enabled in the firmware.
 
 ```bash
-./yolovm host init --power
+./yolovm host init --keep-awake --lock-after 10
 ```
 
 Then **log out of the host and back in** so your Incus access and the `yolovm`
 command on your PATH take effect.
-`--power` keeps the host awake with its screen blanked and locked after ten
-minutes idle; leave it out to keep your own power settings. **Super+L** locks the
-host at once; a locked host keeps its VMs running.
+`--keep-awake` stops the host from suspending on its own, which would stop the
+VMs. `--lock-after 10` blanks and locks its screen after ten idle minutes, and
+`0` means never. Leave either out to keep your own settings. **Super+L** locks
+the host at once; a locked host keeps its VMs running.
 
 <details>
 <summary>What host init does</summary>
@@ -137,10 +140,10 @@ egress:
 6. Copies the Ubuntu 26.04 Desktop image from the `images:` server into the
    local store as `yolovm-desktop`, with automatic updates. `create` launches
    from that copy, so it never waits on the image server.
-7. With `--power`, sets these GNOME preferences for your desktop user:
-   `sleep-inactive-ac-type 'nothing'` prevents automatic suspend on AC power,
-   `idle-delay 600` blanks the screen after ten minutes, and the lock settings
-   make the desktop lock as soon as it blanks. They do not change battery,
+7. With `--keep-awake`, sets `sleep-inactive-ac-type 'nothing'` for your
+   desktop user, which prevents automatic suspend on AC power. With
+   `--lock-after N`, sets `idle-delay` to N minutes and the lock settings so the
+   desktop locks as soon as the screen blanks. Neither changes battery,
    lid-close or login-screen behaviour. If the host sleeps, the VMs stop working
    until it wakes.
 
