@@ -7,19 +7,20 @@
 #   yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
 #                                  launch a VM, provision it, restart it; sizes in GiB
 #   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-#   yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; set the desktop password
+#   yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; print the desktop login
 #   yolovm doctor [NAME]           check this host, or a VM
-#   yolovm desktop NAME            print the remote desktop login; open the VM's screen if this host has one
+#   yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 #   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 #   yolovm ls | start | stop | restart | snapshot | delete NAME
-#                                  stop and restart take --force to cut the power
+#                                  stop and restart take --force to cut the power;
+#                                  delete logs the VM out of the tailnet, then removes it
 #   yolovm version                 print the version
 #
 # Once per tailnet, before signing a VM in, apply host/tailscale-policy.json in
 # the Tailscale admin console (see README.md).
 set -euo pipefail
 
-VERSION=0.2.0
+VERSION=0.3.0
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
 ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
@@ -30,7 +31,7 @@ say() { printf '\n== %s\n' "$*"; }
 die() { echo "yolovm: $*" >&2; exit 1; }
 need_name() { [ -n "${1:-}" ] || die "VM name required"; }
 gib() { case $1 in *[!0-9]*) echo "$1" ;; *) echo "${1}GiB" ;; esac; } # plain numbers mean GiB
-state() { incus list -c s -f csv "$1"; }
+state() { incus list -c s -f csv "^$1\$"; } # anchored: a plain name also matches longer names
 wait_agent() { # until `incus exec` works and the desktop session is up, up to five minutes
   local i; for i in $(seq 1 100); do
     incus exec "$1" -- systemctl --user -M ubuntu@ is-active graphical-session.target >/dev/null 2>&1 && return; sleep 3
@@ -49,6 +50,12 @@ restart() { # clean shutdown and start; --force cuts the power
   local name= force= a; for a in "$@"; do if [ "$a" = --force ]; then force=--force; else name=$a; fi; done
   need_name "$name"; stop "$name" $force; incus start "$name"; wait_agent "$name"
 }
+delete() { # expire the VM's tailnet key by logging it out, then remove it, running or not
+  need_name "${1:-}"
+  [ "$(state "$1")" = RUNNING ] && { incus exec "$1" -- tailscale logout >/dev/null 2>&1 || true; }
+  incus delete --force "$1"
+  say "Deleted $1. Tailscale keeps it listed as expired: remove it in the admin console, or a new VM named $1 gets a numbered name"
+}
 
 host_init() {
   local awake=0 lock=; while [ $# -gt 0 ]; do case $1 in
@@ -57,6 +64,7 @@ host_init() {
     *) die "unknown option: $1" ;;
   esac; done
   say "Checks"
+  grep -qx VERSION_CODENAME=resolute /etc/os-release || die "yolovm needs Ubuntu 26.04; this host runs $(. /etc/os-release && echo "$PRETTY_NAME")"
   [ -e /dev/kvm ] || die "/dev/kvm missing: enable AMD SVM or Intel VT-x in the firmware"
   command -v curl >/dev/null || sudo apt install -y curl ca-certificates
   say "Incus 7.0 LTS from Zabbly, with the desktop viewer"
@@ -98,6 +106,13 @@ create() {
     --disk) disk=$2; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac; done
+  # Incus starts a VM that asks for more than the host has and lets it fail under load, so refuse it here.
+  local have; have=$(awk '/^MemTotal/{print int($2/1048576)}' /proc/meminfo)
+  case $mem in *[!0-9]*) ;; *) [ "$mem" -le "$have" ] || die "--mem $mem: this host has $have GiB" ;; esac
+  have=$(nproc)
+  case $cpu in *[!0-9]*) ;; *) [ "$cpu" -le "$have" ] || die "--cpu $cpu: this host has $have CPUs" ;; esac
+  have=$(df -BG --output=avail "$(incus storage get $POOL source)" | tail -1 | tr -dc 0-9)
+  case $disk in *[!0-9]*) ;; *) [ "$disk" -le "$have" ] || echo "note: --disk $disk with $have GiB free; the disk takes space only as data is written" ;; esac
   say "Launching $name with $cpu CPUs, $(gib "$mem") memory, $(gib "$disk") disk"
   incus launch $ALIAS "$name" --vm --profile $PROFILE -c limits.cpu="$cpu" -c limits.memory="$(gib "$mem")" -d root,size="$(gib "$disk")"
   wait_agent "$name"
@@ -121,6 +136,7 @@ doctor_host() {
   bad() { printf '  !!   %s\n' "$*"; fail=$((fail+1)); }
   check() { local msg=$1; shift; n=$((n+1)); if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
   echo "yolovm doctor · $(hostname)"
+  check "Ubuntu 26.04" grep -qx VERSION_CODENAME=resolute /etc/os-release
   check "/dev/kvm present" test -e /dev/kvm
   check "incus installed" command -v incus
   check "incus usable without sudo" incus info
@@ -148,7 +164,7 @@ desktop() { # the RDP login works from any device on the tailnet; the viewer nee
 case ${1:-} in
   host) [ "${2:-}" = init ] || die "usage: yolovm host init [--keep-awake] [--lock-after MIN]"; shift 2; host_init "$@" ;;
   create) shift; create "$@" ;;
-  provision) provision "${2:-}" "${3:-}" ;;
+  provision) provision "${2:-}" "${3:-}"; say "Restart to apply: yolovm restart $2" ;;
   auth) need_name "${2:-}"; incus exec -t "$2" -- $GUEST/yolovm-guest auth ;;
   doctor) if [ -n "${2:-}" ]; then incus exec "$2" -- $GUEST/yolovm-guest status; else doctor_host; fi ;;
   desktop) desktop "${2:-}" ;;
@@ -158,7 +174,7 @@ case ${1:-} in
   stop) shift; stop "$@" ;;
   restart) shift; restart "$@" ;;
   snapshot) need_name "${2:-}"; incus snapshot create "$2" ${3:+"$3"} ;;
-  delete) need_name "${2:-}"; incus delete "$2" ;;
+  delete) shift; delete "$@" ;;
   version|--version) echo "yolovm $VERSION" ;;
   *) sed -n '2,/^set /{/^set /!p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

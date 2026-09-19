@@ -25,7 +25,7 @@ APT="apt-get -q -o DPkg::Lock::Timeout=300" # wait out first-boot unattended upg
 
 say() { printf '\n== %s\n' "$*"; }
 as_user() { runuser -u $U -- env HOME=$H XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus PATH=$H/.local/bin:/usr/local/bin:/usr/bin:/bin "$@"; }
-user_dir() { install -d -o $U -g $U "$@"; }
+user_dir() { as_user install -d "$@"; } # as ubuntu, so every new path component is theirs
 user_file() { install -o $U -g $U -m 0644 "$1" "$2"; }
 user_unit() { systemctl --user -M $U@ "$@"; }
 merge_json() { # merge_json FILE JSON: keys from JSON win, everything else is kept
@@ -110,7 +110,7 @@ provision_dev() {
   deb() { dpkg -s "$1" >/dev/null 2>&1 || { curl -fL "$2" -o "/var/tmp/$1.deb" && $APT install -y "/var/tmp/$1.deb" && rm "/var/tmp/$1.deb"; }; }
   deb chatgpt https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
   deb google-chrome-stable https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-  install -d /etc/opt/chrome/policies/managed && rm -f /etc/opt/chrome/policies/managed/yolovm.json
+  install -d /etc/opt/chrome/policies/managed
   for f in "$HERE"/roles/dev/chrome-*.json; do install -m 0644 "$f" "/etc/opt/chrome/policies/managed/yolovm-${f##*/chrome-}"; done
   as_user xdg-mime default google-chrome.desktop x-scheme-handler/http x-scheme-handler/https text/html application/xhtml+xml
   user_dir -m 0700 "$H/.config/google-chrome" # Chrome's first-run marker: no terms dialog, no welcome page
@@ -139,7 +139,7 @@ provision() {
   provision_base
   "provision_$role"
   ln -sfn "$HERE/yolovm-guest" /usr/local/bin/yolovm-guest
-  say "Provisioned role '$role'. Restart the VM, then sign in with: yolovm-guest auth"
+  say "Provisioned role '$role'"
 }
 
 # --------------------------------------------------------------------- auth
@@ -154,9 +154,9 @@ auth() {
     as_user env GH_PROMPT_DISABLED=1 GH_BROWSER=echo gh auth login -h github.com -w -p https
     as_user gh auth setup-git
   fi
-  local name; name=$(as_user gh api user --jq .login) # the login serves as both name and email
-  as_user git config --global user.name "$name"
-  as_user git config --global user.email "$name"
+  local login id; login=$(as_user gh api user --jq .login); id=$(as_user gh api user --jq .id)
+  as_user git config --global user.name "$login"
+  as_user git config --global user.email "$id+$login@users.noreply.github.com" # GitHub's address for the account, so commits count as its own
 
   say "Claude"
   if as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then echo "already signed in"
@@ -271,5 +271,5 @@ case ${1:-} in
   desktop) desktop ;;
   status) status ;;
   poweroff) poweroff ;;
-  *) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  *) sed -n '2,/^set /{/^set /!p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

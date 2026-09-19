@@ -128,7 +128,7 @@ keeps its VMs running.
 <details>
 <summary>What host init does</summary>
 
-1. Checks that `/dev/kvm` exists.
+1. Checks that the host runs Ubuntu 26.04 and that `/dev/kvm` exists.
 2. Installs Incus 7.0 LTS from [Zabbly](https://github.com/zabbly/incus#installation),
    whose package includes QEMU, plus `virt-viewer` for the VM screen, using
    [host/zabbly-incus.sources](host/zabbly-incus.sources).
@@ -244,6 +244,7 @@ what differs.
 | --- | --- |
 | System | Disables networkd's unused wait-online service, which otherwise delays boot; sets GNOME to never blank or suspend, marks its first-login wizards as done, and hides Ubuntu's crash-report pop-ups, which `doctor` lists instead; applies pending package updates; installs Git and `gh`. |
 | Keyring | Creates the desktop keyring without a password. With automatic login nothing can unlock one, so the first app that needs it, Chrome or the ChatGPT app, would ask you to invent a password. Secrets in it are unencrypted on disk, like everything else on a VM whose login has no password. |
+| Remote desktop | Enables GNOME's Desktop Sharing over RDP with remote control and a self-signed certificate, so the service starts with every session. `auth` sets a random password the first time, and `auth` and `desktop` print the login. |
 | Tailscale | Installs Tailscale and enables its service. |
 | Instructions | Writes [guest/base/instructions.md](guest/base/instructions.md) to `~/.codex/AGENTS.md` and `~/.claude/CLAUDE.md` and creates `~/proj`. |
 | Claude Code | Installs the CLI on the stable channel; merges [guest/base/claude-settings.json](guest/base/claude-settings.json) into `~/.claude/settings.json`; pre-answers the three first-run dialogs in `~/.claude.json` so only the login remains; installs the Claude Remote Control service. |
@@ -270,10 +271,11 @@ what differs.
 **What starts at boot**
 
 The VM starts with the host (`boot.autostart`), logs into GNOME, and the
-session starts three things: the ChatGPT app, Chrome, and Claude Remote Control,
-the part of Claude Code that lets claude.ai/code and the Claude mobile app drive
-sessions on this VM, run by the service below. Tailscale reconnects on its own
-and, being tagged, never expires. Nothing needs a hand after a reboot.
+session starts the ChatGPT app, Chrome, remote desktop sharing on port 3389,
+and Claude Remote Control, the part of Claude Code that lets claude.ai/code and
+the Claude mobile app drive sessions on this VM, run by the service below.
+Tailscale reconnects on its own and, being tagged, never expires. Nothing needs
+a hand after a reboot.
 
 ```ini
 [Unit]
@@ -310,9 +312,13 @@ enter the code if asked, and the credentials stay inside the VM:
   tag in [Tailscale → Machines](https://login.tailscale.com/admin/machines); an
   untagged VM inherits its user's access instead of the restriction.
 - **GitHub** signs `gh` in over HTTPS and configures Git to use it. The GitHub
-  login becomes both the commit name and the commit email.
+  login becomes the commit name, and the account's GitHub noreply address the
+  commit email, so commits count as its own.
 - **Claude** signs the CLI in; paste the code the page shows. Claude Remote
   Control connects within ten seconds.
+
+It ends with the remote desktop login: the user `ubuntu` and a random password
+set once per VM, which `yolovm desktop NAME` prints again.
 
 Then open the desktop for the two sign-ins that only work there:
 
@@ -338,11 +344,12 @@ through Tailscale SSH, so no keys are needed. `yolovm sh NAME 'command'` runs
 one command. Closing the viewer, the shell or the host terminal leaves the VM
 and its applications running.
 
-Remote desktop is GNOME's own RDP sharing, switched on by hand for now: on the
-VM's desktop open Settings → System → Remote Desktop → Desktop Sharing, enable
-sharing and remote control, and set a login name and password. Then any RDP
-client on your tailnet, such as Windows App on macOS or Remmina on Linux,
-connects to the VM's name on port 3389 with those details.
+Remote desktop is GNOME's own Desktop Sharing over RDP, which provisioning
+enables with remote control and a self-signed certificate, so the client warns
+about it once. `yolovm desktop NAME` prints the login and, from the host's own
+desktop, also opens the VM's screen through Incus. Any RDP client on your
+tailnet, such as Windows App on macOS or Remmina on Linux, connects to the VM's
+name on port 3389 with that login.
 
 ## 5. Check a VM
 
@@ -367,12 +374,13 @@ yolovm host init [--keep-awake] [--lock-after MIN]
 yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
                                launch a VM, provision it, restart it; sizes in GiB
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing
+yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing; print the desktop login
 yolovm doctor [NAME]           check this host, or a VM
-yolovm desktop NAME            open the VM's screen
+yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu
 yolovm ls | start | stop | restart | snapshot | delete NAME
-                               stop and restart take --force to cut the power
+                               stop and restart take --force to cut the power;
+                               delete logs the VM out of the tailnet, then removes it
 yolovm version                 print the version
 ```
 
@@ -380,8 +388,14 @@ yolovm version                 print the version
 from inside, ignoring the desktop's shutdown inhibitors. A plain power-off kills
 a browser and its helper processes at once, which Chrome and the ChatGPT app
 report as a crash after the next boot. With `--force` they cut the power
-instead. `snapshot` before something risky; `provision` after editing anything
-under `guest/`.
+instead. `snapshot` before something risky; `provision`, then `restart`, after
+editing anything under `guest/`.
+
+`delete` logs the VM out of the tailnet, so its key expires at once, then
+removes it whether it is running or not. Tailscale keeps the machine listed as
+expired: remove it in [Tailscale → Machines](https://login.tailscale.com/admin/machines),
+or the next VM created with that name gets a numbered name such as
+`yolovm-dev-1-1`.
 
 Repeat steps 2 and 3 for more VMs. VMs on the `yolovm-dev` profile cannot talk
 to each other on the bridge, and with the Tailscale policy they cannot start
@@ -392,7 +406,7 @@ connections to each other through the tailnet either.
 ```text
 yolovm                 host command
 host/                  Zabbly source, Incus preseed, network ACL, Tailscale policy
-guest/yolovm-guest     runs inside a VM: provision | auth | status | poweroff
+guest/yolovm-guest     runs inside a VM: provision | auth | desktop | status | poweroff
 guest/base/            instructions, GNOME settings, Claude settings, Claude Remote Control unit
 guest/roles/dev/       ChatGPT and Chrome autostart, Chrome policies, Codex config
 docs/                  research and earlier drafts
