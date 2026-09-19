@@ -1,0 +1,30 @@
+config: {} # Keep Incus's global defaults.
+
+storage_pools:
+  - name: yolovm-storage
+    driver: dir # Store VM disks as files on the host.
+    config: {}
+
+networks:
+  - name: yolovmbr0
+    type: bridge
+    config:
+      ipv4.address: auto # Choose a private subnet automatically.
+      ipv4.nat: "true" # Give VMs internet access through the host.
+      ipv6.address: none # Use IPv4 only.
+
+# CPU, memory and disk are not set here: `yolovm create` sets them per VM,
+# because a change to the profile would apply to every existing VM.
+profiles:
+  - name: yolovm-dev
+    config:
+      boot.autostart: "true" # Start VMs when the host boots.
+    devices:
+      root:
+        type: disk
+        pool: yolovm-storage
+        path: /
+      eth0:
+        type: nic
+        network: yolovmbr0 # Connect each VM to this network.
+        security.port_isolation: "true" # Block direct traffic between VMs using this profile.

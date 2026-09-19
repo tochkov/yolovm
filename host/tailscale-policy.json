@@ -1,0 +1,26 @@
+{
+  "tagOwners": {
+    "tag:yolovm": ["autogroup:admin"]
+  },
+  "grants": [
+    {
+      "src": ["autogroup:member"],
+      "dst": ["*"],
+      "ip": ["*"]
+    }
+  ],
+  "ssh": [
+    {
+      "action": "check",
+      "src": ["autogroup:member"],
+      "dst": ["autogroup:self"],
+      "users": ["autogroup:nonroot", "root"]
+    },
+    {
+      "action": "accept",
+      "src": ["autogroup:member"],
+      "dst": ["tag:yolovm"],
+      "users": ["ubuntu"]
+    }
+  ]
+}

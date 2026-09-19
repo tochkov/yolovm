@@ -1,0 +1,236 @@
+#!/bin/bash
+# yolovm-guest runs inside a yolovm. The host's `yolovm` installs it and calls
+# it over `incus exec`; it also works from a shell inside the VM.
+#
+#   yolovm-guest provision [ROLE]   install and configure; safe to run again
+#   yolovm-guest auth               sign in to Tailscale, GitHub and Claude where missing
+#   yolovm-guest status             check apps, boot services, logins, settings, network
+#   yolovm-guest poweroff           close desktop apps cleanly, then power off
+#
+# Base gives every VM: agent instructions, an always-on desktop without password
+# prompts, Tailscale, Git and gh, Claude Code with Claude Remote Control at boot.
+# A role adds apps on top.
+# Role dev: the ChatGPT app and Chrome with the ChatGPT and Claude extensions.
+set -euo pipefail
+[ "$(id -u)" = 0 ] || exec sudo -- "$0" "$@"
+
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+U=ubuntu; H=/home/$U; PROJ=$H/proj
+ROLE_FILE=/etc/yolovm/role
+TAG=tag:yolovm
+export DEBIAN_FRONTEND=noninteractive
+APT="apt-get -q -o DPkg::Lock::Timeout=300" # wait out first-boot unattended upgrades
+
+say() { printf '\n== %s\n' "$*"; }
+as_user() { runuser -u $U -- env HOME=$H XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus PATH=$H/.local/bin:/usr/local/bin:/usr/bin:/bin "$@"; }
+user_dir() { install -d -o $U -g $U "$@"; }
+user_file() { install -o $U -g $U -m 0644 "$1" "$2"; }
+user_unit() { systemctl --user -M $U@ "$@"; }
+merge_json() { # merge_json FILE JSON: keys from JSON win, everything else is kept
+  as_user python3 - "$1" "$2" <<'PY'
+import json, os, sys
+path, patch = sys.argv[1], json.loads(sys.argv[2])
+data = json.load(open(path)) if os.path.exists(path) else {}
+def merge(a, b):
+    for k, v in b.items():
+        a[k] = merge(a[k], v) if isinstance(v, dict) and isinstance(a.get(k), dict) else v
+    return a
+with open(path, 'w') as f:
+    json.dump(merge(data, patch), f, indent=2); f.write('\n')
+PY
+}
+
+# ---------------------------------------------------------------- provision
+provision_base() {
+  say "Base: system"
+  systemctl disable --now systemd-networkd-wait-online.service >/dev/null 2>&1 || true # NetworkManager handles networking; skip networkd's boot wait
+  install -d /etc/dconf/profile /etc/dconf/db/local.d
+  printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user
+  install -m 0644 "$HERE/base/gnome.dconf" /etc/dconf/db/local.d/00-yolovm
+  dconf update
+  $APT update
+  $APT upgrade -y # apply pending updates now, not from a timer that blocks the first shutdown
+  $APT install -y curl ca-certificates git gh
+
+  say "Base: Tailscale"
+  command -v tailscale >/dev/null || curl -fsSL https://tailscale.com/install.sh | sh
+  systemctl enable --now tailscaled
+
+  say "Base: project directory and agent instructions"
+  user_dir "$PROJ" "$H/.codex" "$H/.claude" "$H/.config/gnome-initial-setup"
+  # Skip GNOME's first-login and post-upgrade wizards.
+  local os; os=$(. /etc/os-release && echo "$VERSION_ID")
+  echo yes > "$H/.config/gnome-initial-setup-done"
+  : > "$H/.config/gnome-initial-setup/upgrade-$os-done"
+  chown $U:$U "$H/.config/gnome-initial-setup-done" "$H/.config/gnome-initial-setup/upgrade-$os-done"
+  user_file "$HERE/base/instructions.md" "$H/.codex/AGENTS.md"
+  user_file "$HERE/base/instructions.md" "$H/.claude/CLAUDE.md"
+
+  say "Base: keyring without a password"
+  # With automatic login nothing can unlock a keyring, so the first app needing
+  # one would ask for a password. An unencrypted keyring opens silently instead.
+  local kr=$H/.local/share/keyrings
+  if ! ls "$kr"/*.keyring >/dev/null 2>&1; then
+    user_dir -m 0700 "$kr"
+    printf '[keyring]\ndisplay-name=Default keyring\nctime=0\nmtime=0\nlock-on-idle=false\nlock-after=false\n' > "$kr/Default_keyring.keyring"
+    echo Default_keyring > "$kr/default"
+    chown $U:$U "$kr/Default_keyring.keyring" "$kr/default" && chmod 0600 "$kr/Default_keyring.keyring" "$kr/default"
+  fi
+
+  say "Base: Claude Code with Claude Remote Control at boot"
+  [ -x "$H/.local/bin/claude" ] || curl -fsSL https://claude.ai/install.sh | as_user bash -s stable
+  merge_json "$H/.claude/settings.json" "$(cat "$HERE/base/claude-settings.json")"
+  # Pre-answer the three first-run dialogs; only `claude auth login` remains.
+  merge_json "$H/.claude.json" "{\"hasCompletedOnboarding\": true, \"remoteDialogSeen\": true,
+    \"projects\": {\"$PROJ\": {\"hasTrustDialogAccepted\": true}}}"
+  user_dir "$H/.config/systemd/user/graphical-session.target.wants"
+  user_file "$HERE/base/claude-remote-control.service" "$H/.config/systemd/user/claude-remote-control.service"
+  ln -sfn ../claude-remote-control.service "$H/.config/systemd/user/graphical-session.target.wants/claude-remote-control.service"
+  chown -h $U:$U "$H/.config/systemd/user/graphical-session.target.wants/claude-remote-control.service"
+}
+
+provision_dev() {
+  say "Role dev: ChatGPT app and Chrome"
+  deb() { dpkg -s "$1" >/dev/null 2>&1 || { curl -fL "$2" -o "/var/tmp/$1.deb" && $APT install -y "/var/tmp/$1.deb" && rm "/var/tmp/$1.deb"; }; }
+  deb chatgpt https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb
+  deb google-chrome-stable https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+  install -d /etc/opt/chrome/policies/managed && rm -f /etc/opt/chrome/policies/managed/yolovm.json
+  for f in "$HERE"/roles/dev/chrome-*.json; do install -m 0644 "$f" "/etc/opt/chrome/policies/managed/yolovm-${f##*/chrome-}"; done
+  as_user xdg-mime default google-chrome.desktop x-scheme-handler/http x-scheme-handler/https text/html application/xhtml+xml
+  user_dir "$H/.config/autostart"
+  user_file "$HERE/roles/dev/chatgpt.desktop" "$H/.config/autostart/chatgpt.desktop"
+  user_file "$HERE/roles/dev/google-chrome.desktop" "$H/.config/autostart/google-chrome.desktop"
+  # Codex: set our top-level keys, keep the tables the ChatGPT app adds.
+  as_user python3 - "$H/.codex/config.toml" "$HERE/roles/dev/codex-config.toml" <<'PY'
+import os, re, sys
+path, want = sys.argv[1], open(sys.argv[2]).read()
+text = open(path).read() if os.path.exists(path) else ''
+m = re.search(r'^\[', text, re.M)
+head, tables = (text[:m.start()], text[m.start():]) if m else (text, '')
+for key in re.findall(r'^(\w+)\s*=', want, re.M):
+    head = re.sub(rf'^{key}\s*=.*\n?', '', head, flags=re.M)
+open(path, 'w').write(want + head.strip('\n') + ('\n' if head.strip('\n') else '') + ('\n' + tables if tables else ''))
+PY
+}
+
+provision() {
+  local role=${1:-$(cat $ROLE_FILE 2>/dev/null || echo dev)}
+  declare -F "provision_$role" >/dev/null || { echo "unknown role: $role" >&2; exit 1; }
+  id $U >/dev/null # the image provides ubuntu with passwordless sudo and desktop autologin
+  install -d /etc/yolovm && echo "$role" > $ROLE_FILE && echo "${YOLOVM_VERSION:-unknown}" > /etc/yolovm/version
+  provision_base
+  "provision_$role"
+  ln -sfn "$HERE/yolovm-guest" /usr/local/bin/yolovm-guest
+  say "Provisioned role '$role'. Restart the VM, then sign in with: yolovm-guest auth"
+}
+
+# --------------------------------------------------------------------- auth
+auth() {
+  say "Tailscale"
+  if tailscale status --json 2>/dev/null | grep -q '"BackendState": "Running"'; then echo "already connected"
+  else tailscale up --ssh --advertise-tags=$TAG; fi
+
+  say "GitHub"
+  if as_user gh auth status >/dev/null 2>&1; then echo "already signed in as $(as_user gh api user --jq .login)"
+  else
+    as_user env GH_PROMPT_DISABLED=1 GH_BROWSER=echo gh auth login -h github.com -w -p https
+    as_user gh auth setup-git
+  fi
+  local name; name=$(as_user gh api user --jq .login) # the login serves as both name and email
+  as_user git config --global user.name "$name"
+  as_user git config --global user.email "$name"
+
+  say "Claude"
+  if as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then echo "already signed in"
+  else as_user claude auth login; fi
+}
+
+# ----------------------------------------------------------------- poweroff
+poweroff() { # signal each desktop app's main process only, so browsers close cleanly, then power off
+  local pid i live main=()
+  for pid in $(ps -u $U -o pid=); do
+    grep -q '/app-.*\.scope$' "/proc/$pid/cgroup" 2>/dev/null || continue # launched by the desktop session
+    grep -qz -- '--type=' "/proc/$pid/cmdline" 2>/dev/null && continue    # browser helper: its parent closes it
+    main+=("$pid")
+  done
+  [ ${#main[@]} -gt 0 ] && kill -TERM "${main[@]}" 2>/dev/null
+  for i in $(seq 1 20); do
+    live=0; for pid in "${main[@]}"; do [ -d "/proc/$pid" ] && live=1; done
+    [ $live = 0 ] && break; sleep 1
+  done
+  systemctl poweroff -i
+}
+
+# ------------------------------------------------------------------- status
+wait_online_disabled() { ! systemctl is-enabled -q systemd-networkd-wait-online.service; }
+claude_bypasses() { python3 -c "import json;assert json.load(open('$H/.claude/settings.json'))['permissions']['defaultMode']=='bypassPermissions'"; }
+claude_dialogs_answered() { python3 -c "import json;d=json.load(open('$H/.claude.json'));assert d['hasCompletedOnboarding'] and d['remoteDialogSeen'] and d['projects']['$PROJ']['hasTrustDialogAccepted']"; }
+claude_signed_in() { as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; }
+tailscale_tagged() { tailscale status --json | python3 -c "import json,sys;s=json.load(sys.stdin);assert s['BackendState']=='Running' and '$TAG' in (s['Self'].get('Tags') or [])"; }
+online_user_peer() { tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(next((p['TailscaleIPs'][0]+' '+p['HostName'] for p in (json.load(sys.stdin).get('Peer') or {}).values() if p.get('Online') and not p.get('Tags')),''))" 2>/dev/null || true; }
+keyring_opens() { as_user gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.Unlock "['/org/freedesktop/secrets/collection/Default_5fkeyring']" | grep -q "objectpath '/')"; } # unlocks with no prompt
+crashes_since_boot() { find /var/crash -name '*.crash' -newer /proc/1 2>/dev/null | sed 's|.*/_||; s|\.[0-9]*\.crash$||; s|_|/|g' | tr '\n' ' '; }
+blocked() { ! ping -c1 -W2 "$1"; }
+chrome_is_default() { [ "$(as_user xdg-settings get default-web-browser 2>/dev/null)" = google-chrome.desktop ]; }
+codex_full_access() { grep -qx 'approval_policy = "never"' $H/.codex/config.toml && grep -qx 'sandbox_mode = "danger-full-access"' $H/.codex/config.toml; }
+
+ok() { printf '  ok   %s\n' "$*"; }
+bad() { printf '  !!   %s\n' "$*"; FAIL=$((FAIL+1)); }
+check() { local msg=$1; shift; N=$((N+1)); if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
+section() { printf '\n%s\n' "$*"; }
+role_checks() { declare -F "status_${ROLE}_$1" >/dev/null && "status_${ROLE}_$1"; return 0; } # a role adds checks per section
+
+status() {
+  ROLE=$(cat $ROLE_FILE 2>/dev/null || echo none); N=0; FAIL=0
+  echo "$(hostname) · role $ROLE · provisioned by yolovm $(cat /etc/yolovm/version 2>/dev/null || echo unknown)"
+  section "Apps"
+  for c in git gh tailscale; do check "$c installed" command -v $c; done
+  check "claude installed" test -x $H/.local/bin/claude
+  role_checks apps
+  section "Boot"
+  check "networkd wait-online disabled" wait_online_disabled
+  check "keyring opens without a password prompt" keyring_opens
+  check "claude remote control running" user_unit is-active claude-remote-control.service
+  role_checks boot
+  local crashes; crashes=$(crashes_since_boot); N=$((N+1))
+  if [ -z "$crashes" ]; then ok "no app crashes since boot"; else bad "app crashes since boot, see /var/crash: $crashes"; fi
+  section "Sign-in"
+  check "tailscale connected with $TAG" tailscale_tagged
+  check "github signed in" as_user gh auth status
+  check "claude signed in" claude_signed_in
+  section "Settings"
+  check "agent instructions present" test -s $H/.claude/CLAUDE.md -a -s $H/.codex/AGENTS.md
+  check "claude permissions bypassed" claude_bypasses
+  check "claude first-run dialogs pre-answered" claude_dialogs_answered
+  role_checks settings
+  section "Network"
+  local gw peer; gw=$(ip -4 route show default | awk '{print $3; exit}')
+  check "internet reachable" ping -c1 -W3 1.1.1.1
+  check "host gateway $gw blocked" blocked "$gw"
+  peer=$(online_user_peer)
+  if [ -n "$peer" ]; then check "tailnet peer ${peer#* } ${peer%% *} blocked" blocked "${peer%% *}"; else echo "  --   tailnet peer check skipped: no user device online, or not on the tailnet yet"; fi
+  echo
+  if [ $FAIL = 0 ]; then echo "$N checks, all ok"; else echo "$FAIL of $N checks failed"; return 1; fi
+}
+
+status_dev_apps() {
+  check "chatgpt installed" dpkg -s chatgpt
+  check "chrome installed" dpkg -s google-chrome-stable
+}
+status_dev_boot() {
+  check "chatgpt running" pgrep -u $U -x ChatGPT
+  check "chrome running" pgrep -u $U -x chrome
+}
+status_dev_settings() {
+  check "chrome policies installed" test -f /etc/opt/chrome/policies/managed/yolovm-extensions.json -a -f /etc/opt/chrome/policies/managed/yolovm-settings.json
+  check "chrome is the default browser" chrome_is_default
+  check "codex approval never, full access" codex_full_access
+}
+
+case ${1:-} in
+  provision) provision "${2:-}" ;;
+  auth) auth ;;
+  status) status ;;
+  poweroff) poweroff ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

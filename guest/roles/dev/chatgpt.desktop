@@ -1,0 +1,5 @@
+# Start the ChatGPT desktop app when the desktop session begins.
+[Desktop Entry]
+Type=Application
+Name=ChatGPT
+Exec=chatgpt

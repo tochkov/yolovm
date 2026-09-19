@@ -1,0 +1,100 @@
+# Incus profile: virtual hardware outside cloud-init; Ubuntu setup inside it.
+description: Minimal Ubuntu desktop for yolo
+config:
+  limits.cpu: "12"
+  limits.memory: 32GiB
+  boot.autostart: "true"
+
+  cloud-init.user-data: |
+    #cloud-config
+    package_update: true
+
+    users:
+      - name: yolo
+        shell: /bin/bash
+        lock_passwd: true
+        sudo: "ALL=(ALL) NOPASSWD:ALL"
+
+    # Desktop, installation tools, and GitHub support.
+    packages:
+      - ubuntu-desktop-minimal
+      - sudo
+      - curl
+      - ca-certificates
+      - git
+      - gh
+
+    write_files:
+      - path: /home/yolo/.codex/AGENTS.md
+        owner: yolo:yolo
+        permissions: '0644'
+        defer: true
+        content: |
+          You are working as yolo in the persistent Ubuntu VM yolo-dev-1.
+          Keep projects under /home/yolo/proj.
+          You have unrestricted passwordless sudo. Install dependencies and
+          configure this VM as needed for assigned work without routine
+          permission questions. Use this VM's files, applications, and browsers.
+          Preserve existing projects, credentials, and ongoing work.
+          Keep changes inside this VM; preserve the host's network restrictions.
+          Report changes that affect future sessions.
+
+      # Enter the desktop without an account password.
+      - path: /etc/gdm3/custom.conf
+        defer: true
+        content: |
+          [daemon]
+          AutomaticLoginEnable=true
+          AutomaticLogin=yolo
+
+      # Load the VM's GNOME defaults below.
+      - path: /etc/dconf/profile/user
+        defer: true
+        content: |
+          user-db:user
+          system-db:local
+
+      # Keep the VM session available for the agent.
+      - path: /etc/dconf/db/local.d/00-yolo
+        defer: true
+        content: |
+          [org/gnome/desktop/session]
+          idle-delay=uint32 0
+          [org/gnome/desktop/screensaver]
+          lock-enabled=false
+          [org/gnome/settings-daemon/plugins/power]
+          sleep-inactive-ac-type='nothing'
+
+    # Runs as root once, after packages and files are installed.
+    runcmd:
+      - |
+        # Stop if a download or installation fails.
+        set -e
+        # Use default answers for package configuration prompts.
+        export DEBIAN_FRONTEND=noninteractive
+
+        # Create directories owned by yolo, rather than root.
+        install -d -o yolo -g yolo /home/yolo/proj /home/yolo/.codex /home/yolo/.claude
+        # Copy the same instructions for Claude and set file ownership and permissions.
+        install -o yolo -g yolo -m 0644 /home/yolo/.codex/AGENTS.md /home/yolo/.claude/CLAUDE.md
+
+        curl -fL --retry 3 https://persistent.oaistatic.com/codex-app-prod/linux/deb/latest/chatgpt_amd64.deb -o /var/tmp/chatgpt.deb
+        curl -fL --retry 3 https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb -o /var/tmp/chrome.deb
+        apt-get install -y /var/tmp/chatgpt.deb /var/tmp/chrome.deb
+
+        # NetworkManager handles desktop networking; remove the cloud image's unused wait.
+        systemctl disable systemd-networkd-wait-online.service
+
+        dconf update
+        systemctl set-default graphical.target
+
+devices:
+  root:
+    type: disk
+    pool: default
+    path: /
+    size: 300GiB
+  eth0:
+    type: nic
+    name: eth0
+    network: incusbr0

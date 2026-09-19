@@ -1,0 +1,29 @@
+description: Internet access with private and local destinations blocked
+
+# Incus allows the bridge's DHCP and DNS services separately.
+# VM-to-VM isolation is set on the NIC in incus-preseed.yaml.
+
+# Traffic toward a VM. This does not forward ports from the internet.
+ingress:
+  - action: allow
+    state: enabled # Activate this rule.
+
+# Traffic leaving a VM. Rejection rules take priority over allow rules.
+egress:
+  - description: Private IPv4 networks
+    action: reject
+    state: enabled
+    destination: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+  - description: Shared and link-local addresses
+    action: reject
+    state: enabled
+    destination: 100.64.0.0/10,169.254.0.0/16
+  - description: Special-purpose IPv4 addresses
+    action: reject
+    state: enabled
+    destination: 0.0.0.0/8,127.0.0.0/8,224.0.0.0/4,240.0.0.0/4
+  - action: reject
+    state: enabled
+    destination: "::/0" # Block all IPv6 destinations.
+  - action: allow # Allow destinations not rejected above.
+    state: enabled

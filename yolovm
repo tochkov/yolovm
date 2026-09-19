@@ -1,0 +1,151 @@
+#!/bin/bash
+# yolovm: persistent Ubuntu desktop VMs for coding agents, on this host.
+#
+#   yolovm host init [--power]     install Incus; define storage, network, ACL, profile and image
+#   yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
+#                                  launch a VM, provision it, restart it; sizes in GiB
+#   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
+#   yolovm auth NAME               sign in to Tailscale, GitHub and Claude where missing
+#   yolovm doctor [NAME]           check this host, or a VM
+#   yolovm desktop NAME            open the VM's screen
+#   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
+#   yolovm ls | start | stop | restart | snapshot | delete NAME
+#                                  stop and restart take --force to cut the power
+#   yolovm version                 print the version
+#
+# Once per tailnet, before signing a VM in, apply host/tailscale-policy.json in
+# the Tailscale admin console (see README.md).
+set -euo pipefail
+
+VERSION=0.1.0
+HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
+ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
+GUEST=/usr/local/lib/yolovm
+CPU=4 MEM=8 DISK=50 # defaults for a new VM; memory and disk in GiB
+
+say() { printf '\n== %s\n' "$*"; }
+die() { echo "yolovm: $*" >&2; exit 1; }
+need_name() { [ -n "${1:-}" ] || die "VM name required"; }
+gib() { case $1 in *[!0-9]*) echo "$1" ;; *) echo "${1}GiB" ;; esac; } # plain numbers mean GiB
+state() { incus list -c s -f csv "$1"; }
+wait_agent() { # until `incus exec` works and the desktop session is up, up to five minutes
+  local i; for i in $(seq 1 100); do
+    incus exec "$1" -- systemctl --user -M ubuntu@ is-active graphical-session.target >/dev/null 2>&1 && return; sleep 3
+  done
+  die "$1: guest not ready"
+}
+stop() { # close the desktop apps, then power off from inside ignoring inhibitors; --force cuts the power
+  local name= force=0 a i; for a in "$@"; do if [ "$a" = --force ]; then force=1; else name=$a; fi; done
+  need_name "$name"
+  if [ $force = 1 ]; then incus stop "$name" --force; return; fi
+  incus exec "$name" -- $GUEST/yolovm-guest poweroff >/dev/null 2>&1 || incus exec "$name" -- systemctl poweroff -i >/dev/null 2>&1 || true
+  for i in $(seq 1 60); do [ "$(state "$name")" = STOPPED ] && return; sleep 2; done
+  die "$name did not stop; try: yolovm stop $name --force"
+}
+restart() { # clean shutdown and start; --force cuts the power
+  local name= force= a; for a in "$@"; do if [ "$a" = --force ]; then force=--force; else name=$a; fi; done
+  need_name "$name"; stop "$name" $force; incus start "$name"; wait_agent "$name"
+}
+
+host_init() {
+  say "Checks"
+  [ -e /dev/kvm ] || die "/dev/kvm missing: enable AMD SVM or Intel VT-x in the firmware"
+  command -v curl >/dev/null || sudo apt install -y curl ca-certificates
+  say "Incus 7.0 LTS from Zabbly, with the desktop viewer"
+  if ! command -v incus >/dev/null; then
+    sudo install -d -m 0755 /etc/apt/keyrings
+    sudo curl -fsSL https://pkgs.zabbly.com/key.asc -o /etc/apt/keyrings/zabbly.asc
+    sudo install -m 0644 "$HERE/host/zabbly-incus.sources" /etc/apt/sources.list.d/zabbly-incus-lts-7.0.sources
+    sudo apt update && sudo apt install -y incus virt-viewer
+  fi
+  sudo systemctl enable --now incus.socket incus-startup.service
+  id -nG | grep -qw incus-admin || { sudo usermod -aG incus-admin "$USER"; echo "Added $USER to incus-admin: log out and back in to use yolovm without sudo."; }
+  say "Storage, network, ACL and profile"
+  sudo incus admin init --preseed < "$HERE/host/incus-preseed.yaml"
+  if sudo incus network acl show $ACL >/dev/null 2>&1; then sudo incus network acl edit $ACL < "$HERE/host/network-acl.yaml"
+  else sudo incus network acl create $ACL < "$HERE/host/network-acl.yaml"; fi
+  sudo incus network set $NET security.acls=$ACL
+  say "Ubuntu desktop image, kept up to date in the local store"
+  sudo incus image info $ALIAS >/dev/null 2>&1 || sudo incus image copy $IMAGE local: --alias $ALIAS --auto-update
+  say "The yolovm command"
+  install -d "$HOME/.local/bin" && ln -sfn "$HERE/yolovm" "$HOME/.local/bin/yolovm"
+  case :$PATH: in *":$HOME/.local/bin:"*) ;; *) echo "~/.local/bin joins your PATH at the next login; until then run: export PATH=\"\$HOME/.local/bin:\$PATH\"" ;; esac
+  if [ "${1:-}" = --power ]; then
+    say "Host power: stay awake, blank and lock after ten minutes"
+    gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+    gsettings set org.gnome.desktop.session idle-delay 600
+    gsettings set org.gnome.desktop.lockdown disable-lock-screen false
+    gsettings set org.gnome.desktop.screensaver lock-enabled true
+    gsettings set org.gnome.desktop.screensaver lock-delay 0
+  fi
+  say "Host ready. Apply host/tailscale-policy.json in the Tailscale admin console, then: yolovm create NAME"
+}
+
+create() {
+  need_name "${1:-}"; local name=$1 role=dev cpu=$CPU mem=$MEM disk=$DISK; shift
+  while [ $# -gt 0 ]; do case $1 in
+    --role) role=$2; shift 2 ;;
+    --cpu)  cpu=$2; shift 2 ;;
+    --mem)  mem=$2; shift 2 ;;
+    --disk) disk=$2; shift 2 ;;
+    *) die "unknown option: $1" ;;
+  esac; done
+  say "Launching $name with $cpu CPUs, $(gib "$mem") memory, $(gib "$disk") disk"
+  incus launch $ALIAS "$name" --vm --profile $PROFILE -c limits.cpu="$cpu" -c limits.memory="$(gib "$mem")" -d root,size="$(gib "$disk")"
+  wait_agent "$name"
+  incus exec "$name" -- cloud-init status --wait >/dev/null 2>&1 || true # first-boot setup finished
+  provision "$name" "$role"
+  say "Restarting $name"
+  restart "$name"
+  say "$name is ready. Next: yolovm auth $name"
+}
+
+provision() {
+  need_name "${1:-}"; local name=$1 role=${2:-}
+  say "Provisioning $name"
+  tar -C "$HERE/guest" -cf - . | incus exec "$name" -- sh -c "rm -rf $GUEST && mkdir -p $GUEST && tar -C $GUEST -xf -"
+  incus exec "$name" --env YOLOVM_VERSION=$VERSION -- $GUEST/yolovm-guest provision $role
+}
+
+doctor_host() {
+  local n=0 fail=0
+  ok() { printf '  ok   %s\n' "$*"; }
+  bad() { printf '  !!   %s\n' "$*"; fail=$((fail+1)); }
+  check() { local msg=$1; shift; n=$((n+1)); if "$@" >/dev/null 2>&1; then ok "$msg"; else bad "$msg"; fi; }
+  echo "yolovm doctor · $(hostname)"
+  check "/dev/kvm present" test -e /dev/kvm
+  check "incus installed" command -v incus
+  check "incus usable without sudo" incus info
+  check "incus starts at boot" systemctl is-enabled -q incus.socket incus-startup.service
+  check "storage pool $POOL" incus storage show $POOL
+  check "network $NET" incus network show $NET
+  check "profile $PROFILE" incus profile show $PROFILE
+  check "ACL $ACL attached to $NET" grep -qw $ACL <(incus network get $NET security.acls)
+  check "image $ALIAS in the local store" incus image info $ALIAS
+  check "yolovm on PATH" command -v yolovm
+  if [ $fail = 0 ]; then echo "$n checks, all ok"; else echo "$fail of $n checks failed"; return 1; fi
+}
+
+shell() {
+  need_name "${1:-}"; local name=$1; shift
+  if [ $# -gt 0 ]; then incus exec "$name" -- runuser -l ubuntu -c "$*"; else incus exec -t "$name" -- runuser -l ubuntu; fi
+}
+
+case ${1:-} in
+  host) [ "${2:-}" = init ] || die "usage: yolovm host init [--power]"; host_init "${3:-}" ;;
+  create) shift; create "$@" ;;
+  provision) provision "${2:-}" "${3:-}" ;;
+  auth) need_name "${2:-}"; incus exec -t "$2" -- $GUEST/yolovm-guest auth ;;
+  doctor) if [ -n "${2:-}" ]; then incus exec "$2" -- $GUEST/yolovm-guest status; else doctor_host; fi ;;
+  desktop) need_name "${2:-}"; incus console "$2" --type vga ;;
+  sh) shift; shell "$@" ;;
+  ls) incus list ;;
+  start) need_name "${2:-}"; incus start "$2"; wait_agent "$2" ;;
+  stop) shift; stop "$@" ;;
+  restart) shift; restart "$@" ;;
+  snapshot) need_name "${2:-}"; incus snapshot create "$2" ${3:+"$3"} ;;
+  delete) need_name "${2:-}"; incus delete "$2" ;;
+  version|--version) echo "yolovm $VERSION" ;;
+  *) sed -n '2,/^set /{/^set /!p}' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

@@ -1,0 +1,6 @@
+# Start Google Chrome when the desktop session begins, so the ChatGPT and Claude
+# extensions are available to the agents.
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Exec=google-chrome-stable

@@ -1,0 +1,10 @@
+# Keep the desktop session awake and unblanked for the agents.
+[org/gnome/desktop/session]
+idle-delay=uint32 0
+
+[org/gnome/settings-daemon/plugins/power]
+sleep-inactive-ac-type='nothing'
+
+# No crash-report pop-ups; `yolovm doctor` lists crashes instead.
+[com/ubuntu/update-notifier]
+show-apport-crashes=false

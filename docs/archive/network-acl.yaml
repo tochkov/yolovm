@@ -1,0 +1,32 @@
+# Incus applies reject rules before allow rules, regardless of their order here.
+# Required bridge services (including DHCP and DNS) remain available.
+description: Allow internet access; block private and local destinations
+
+ingress:
+  - action: allow
+    state: enabled
+
+egress:
+  - description: Private IPv4 networks
+    action: reject
+    state: enabled
+    destination: 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
+
+  - description: Shared and link-local addresses
+    action: reject
+    state: enabled
+    destination: 100.64.0.0/10,169.254.0.0/16
+
+  - description: Special-purpose IPv4 addresses
+    action: reject
+    state: enabled
+    destination: 0.0.0.0/8,127.0.0.0/8,224.0.0.0/4,240.0.0.0/4
+
+  - description: Block native IPv6
+    action: reject
+    state: enabled
+    destination: "::/0"
+
+  - description: Allow remaining outbound traffic
+    action: allow
+    state: enabled

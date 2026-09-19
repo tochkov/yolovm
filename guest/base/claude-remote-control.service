@@ -1,0 +1,19 @@
+# Claude Remote Control, the part of Claude Code that lets claude.ai/code and the
+# Claude mobile app drive sessions on this VM. Starts with the desktop session,
+# is named after the VM, grants all permissions and opens sessions in ~/proj.
+# Its status display is redrawn every second, so stdout is discarded; errors
+# still reach the journal.
+[Unit]
+Description=Claude Remote Control
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+WorkingDirectory=%h/proj
+ExecStart=%h/.local/bin/claude remote-control --name %H --permission-mode bypassPermissions
+StandardOutput=null
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
