@@ -5,7 +5,8 @@
 #   yolovm-guest provision [ROLE]   install and configure; safe to run again
 #   yolovm-guest auth [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
 #                                   sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
-#                                   set the desktop password; the host command restarts the VM afterwards
+#                                   enable ChatGPT remote access and print a pairing code; set the desktop password;
+#                                   the host command restarts the VM afterwards
 #   yolovm-guest desktop            print the remote desktop login, setting its password the first time
 #   yolovm-guest status             check apps, boot services, logins, settings, network
 #   yolovm-guest poweroff           close desktop apps cleanly, then power off
@@ -149,7 +150,7 @@ provision() {
 }
 
 # --------------------------------------------------------------------- auth
-auth() { # each --no-SERVICE option skips that sign-in
+auth() { # each --no-SERVICE option skips that service's setup
   local tailscale=1 gh=1 claude=1 chatgpt=1 role a
   for a in "$@"; do case $a in
     --no-tailscale) tailscale=0 ;;
@@ -207,6 +208,41 @@ auth_chatgpt() {
       return 1
     fi
   fi
+  say "ChatGPT remote access"
+  # Close the app before changing Allow; the normal auth reboot starts it again.
+  local pid
+  for pid in $(pgrep -u $U -x ChatGPT || true); do
+    grep -qz -- '--type=' "/proc/$pid/cmdline" 2>/dev/null && continue
+    kill -TERM "$pid" 2>/dev/null || true
+    timeout 20 tail --pid="$pid" -f /dev/null
+  done
+  as_user python3 - "$H/.codex/sqlite" <<'PY'
+import pathlib, sqlite3, sys, time
+dbs = [p for p in pathlib.Path(sys.argv[1]).glob('codex*.db') if p.is_file()]
+if len(dbs) != 1:
+    sys.exit('Expected one ChatGPT settings database. Start the app once, then rerun auth.')
+with sqlite3.connect(dbs[0].as_uri() + '?mode=rw', uri=True) as db:
+    db.execute('''INSERT INTO local_app_server_feature_enablement (feature_name, enabled, updated_at)
+                  VALUES ('remote_control', 1, ?)
+                  ON CONFLICT(feature_name) DO UPDATE SET enabled=1, updated_at=excluded.updated_at''',
+               (int(time.time() * 1000),))
+PY
+  echo "After the VM restarts, enter the pairing code below in ChatGPT on the controlling device."
+  as_user env CODEX_HOME="$H/.codex" bash -s -- "$CHATGPT_CODEX" <<'SH'
+set -e
+"$1" app-server --remote-control --listen unix:// </dev/null >/dev/null &
+server=$!
+trap 'kill "$server" 2>/dev/null || true; wait "$server" 2>/dev/null || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM HUP
+# Enrollment may take a moment after the server starts.
+for i in {1..30}; do
+  sleep 1
+  kill -0 "$server" || exit 1
+  if "$1" remote-control pair; then exit 0; fi
+done
+exit 1
+SH
 }
 
 # ------------------------------------------------------------------ desktop

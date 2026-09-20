@@ -9,7 +9,7 @@
 #   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
 #   yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
 #                                  sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
-#                                  print the desktop login, then restart the VM after successful auth
+#                                  print ChatGPT pairing and desktop login details, then restart the VM
 #   yolovm doctor [NAME]           check this host, or a VM
 #   yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 #   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
@@ -22,7 +22,7 @@
 # the Tailscale admin console (see README.md).
 set -euo pipefail
 
-VERSION=0.5.0
+VERSION=0.6.0
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
 ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
@@ -141,8 +141,15 @@ provision() {
   incus exec "$name" --env YOLOVM_VERSION=$VERSION -- $GUEST/yolovm-guest provision $role
 }
 
+guest_version() { incus exec "$1" -- cat /etc/yolovm/version 2>/dev/null || echo none; }
+need_current_guest() { # an older guest bundle ignores or misreads this version's options
+  local v; v=$(guest_version "$1")
+  [ "$v" = "$VERSION" ] || die "$1 was provisioned by yolovm $v, this is $VERSION. Run: yolovm provision $1"
+}
+
 auth() {
   need_name "${1:-}"; local name=$1; shift
+  need_current_guest "$name"
   incus exec -t "$name" -- $GUEST/yolovm-guest auth "$@"
   say "Restarting $name after authentication"
   restart "$name"

@@ -11,8 +11,9 @@ yolovm auth yolovm-dev-1
 ```
 
 That's it. Pick `yolovm-dev-1` in the Claude app on your phone and tell it what
-to build. `auth` also signs in the ChatGPT app and restarts the VM. Visit the
-desktop to finish the Claude extension sign-in and any browser connection setup.
+to build. `auth` also signs in ChatGPT, prints a remote pairing code and restarts
+the VM. Visit the desktop to finish the Claude extension sign-in and any browser
+connection setup.
 
 ## Why
 
@@ -328,17 +329,27 @@ enter the code if asked, and the credentials stay inside the VM:
   your ChatGPT security settings or workspace permissions if required. A saved
   ChatGPT login skips this step; no separate Codex CLI installation is needed.
 
+ChatGPT setup then closes the app, saves its Allow connections setting in SQLite,
+and runs the bundled `app-server --remote-control --listen unix://` and
+`remote-control pair`. After the restart, enter the printed pairing code
+on your controlling device in ChatGPT's
+**Settings → Connections → Control other devices**. Existing devices stay paired.
+The temporary server is stopped after printing the code; the desktop takes over
+at boot. This uses the app's internal setting and bundled CLI, verified with
+`0.155.0-alpha.9.2`.
+
 After all requested sign-ins succeed, it prints the remote desktop login:
 the user `ubuntu` and a random password set once per VM, which
 `yolovm desktop NAME` prints again. The host then restarts the VM cleanly and
 waits for its desktop session to return. ChatGPT and Chrome start with that
-session, so the app can pick up the saved login. A failed or cancelled sign-in
-stops the command before the restart; rerun `auth` to continue.
+session, so the app can pick up the saved login and remote settings. A failed or
+cancelled setup stops the command before the restart; rerun `auth` to continue.
 
 `--no-tailscale`, `--no-gh`, `--no-claude` and `--no-chatgpt` skip individual
-sign-ins. A successful `auth` still restarts the VM, even when every service
-was already signed in or skipped. Running `yolovm-guest auth` directly inside
-the VM only performs authentication; the host's `yolovm auth NAME` owns the restart.
+services; `--no-chatgpt` skips both sign-in and pairing. A successful `auth` still
+restarts the VM, even when every service was already signed in or skipped.
+Running `yolovm-guest auth` directly inside the VM performs setup without
+reopening ChatGPT; the host's `yolovm auth NAME` owns the restart.
 
 Then open the desktop to finish setup:
 
@@ -403,7 +414,7 @@ yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
 yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
                                sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
-                               print the desktop login, then restart the VM after successful auth
+                               print ChatGPT pairing and desktop login details, then restart the VM
 yolovm doctor [NAME]           check this host, or a VM
 yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu
