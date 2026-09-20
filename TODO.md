@@ -13,7 +13,7 @@
 - [ ] Doctor polish, later: colour for `ok` and `!!` when on a terminal, and a
   verbose mode that prints versions.
 - [ ] Add roles beyond `dev` (research, news): `provision_NAME` plus
-  `status_NAME_apps|boot|settings` functions in `guest/yolovm-guest`, and files
+  `status_NAME_apps|boot|signin|settings` functions in `guest/yolovm-guest`, and files
   under `guest/roles/NAME/`.
 - [ ] Optional: a reusable template image for faster creation. Explain how
   publishing an image differs from a snapshot, and how to strip credentials and

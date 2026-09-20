@@ -11,8 +11,8 @@ yolovm auth yolovm-dev-1
 ```
 
 That's it. Pick `yolovm-dev-1` in the Claude app on your phone and tell it what
-to build. The ChatGPT app and the Chrome extensions need one visit to the VM's
-desktop to sign in.
+to build. `auth` also signs in the ChatGPT app and restarts the VM. Visit the
+desktop to finish the Claude extension sign-in and any browser connection setup.
 
 ## Why
 
@@ -308,6 +308,9 @@ which run headless and would otherwise ignore the default in `~/.claude.json`.
 yolovm auth yolovm-dev-1
 ```
 
+After updating yolovm on the host, run `yolovm provision NAME` on existing VMs
+first to copy the updated guest code. The following `auth` run provides the restart.
+
 Each service that is not yet signed in prints a link. Open it on any device,
 enter the code if asked, and the credentials stay inside the VM:
 
@@ -319,22 +322,35 @@ enter the code if asked, and the credentials stay inside the VM:
   commit email, so commits count as its own.
 - **Claude** signs the CLI in; paste the code the page shows. Claude Remote
   Control connects within ten seconds.
+- **ChatGPT** (dev role) uses the app's bundled Codex to run `login --device-auth`
+  as `ubuntu`, with the same `~/.codex` state and desktop keyring as the app.
+  Open the link on any device and enter the code. Enable device-code login in
+  your ChatGPT security settings or workspace permissions if required. A saved
+  ChatGPT login skips this step; no separate Codex CLI installation is needed.
 
-It ends with the remote desktop login: the user `ubuntu` and a random password
-set once per VM, which `yolovm desktop NAME` prints again. `--no-tailscale`,
-`--no-gh` and `--no-claude` skip a service you do not want.
+After all requested sign-ins succeed, it prints the remote desktop login:
+the user `ubuntu` and a random password set once per VM, which
+`yolovm desktop NAME` prints again. The host then restarts the VM cleanly and
+waits for its desktop session to return. ChatGPT and Chrome start with that
+session, so the app can pick up the saved login. A failed or cancelled sign-in
+stops the command before the restart; rerun `auth` to continue.
 
-Then open the desktop for the two sign-ins that only work there:
+`--no-tailscale`, `--no-gh`, `--no-claude` and `--no-chatgpt` skip individual
+sign-ins. A successful `auth` still restarts the VM, even when every service
+was already signed in or skipped. Running `yolovm-guest auth` directly inside
+the VM only performs authentication; the host's `yolovm auth NAME` owns the restart.
+
+Then open the desktop to finish setup:
 
 ```bash
 yolovm desktop yolovm-dev-1
 ```
 
-1. **ChatGPT:** sign in, open `/home/ubuntu/proj` in Codex, and check that its
+1. **ChatGPT:** open `/home/ubuntu/proj` in Codex and check that its
    permission selector shows Full access.
-2. **Chrome:** sign into the ChatGPT and Claude extensions, the Claude one with
-   the same account as Claude Code, then finish ChatGPT's
-   [browser connection setup](https://learn.chatgpt.com/docs/chrome-extension).
+2. **Chrome:** sign into the Claude extension with the same account as Claude
+   Code. The ChatGPT extension uses the desktop app's login; check its connection
+   and finish any remaining [browser connection setup](https://learn.chatgpt.com/docs/chrome-extension).
 
 Claude Code writes Chrome's native messaging host during the first session that
 uses the browser. If `/chrome` then shows the extension as not detected, restart
@@ -373,7 +389,8 @@ and the host's bridge address and an online personal tailnet device not to
 answer. No reply is the expected result, but does not prove firewall isolation;
 probe errors are failures, and a missing tailnet peer is a skip. Expired sign-ins
 show up here too; `yolovm auth NAME` repairs them. `yolovm doctor` alone checks
-the host.
+the host. For the dev role, `doctor` also checks that the app's bundled Codex
+exists and reports a saved ChatGPT login; this does not test a live browser task.
 
 ## Day to day
 
@@ -384,9 +401,9 @@ yolovm host init [--keep-awake] [--lock-after MIN]
 yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
                                launch a VM, provision it, restart it; sizes in GiB
 yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude]
-                               sign in to Tailscale, GitHub and Claude where missing, or skip some;
-                               print the desktop login
+yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
+                               sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
+                               print the desktop login, then restart the VM after successful auth
 yolovm doctor [NAME]           check this host, or a VM
 yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 yolovm sh NAME [CMD...]        shell in the VM as ubuntu
@@ -424,7 +441,7 @@ docs/                  research and earlier drafts
 ```
 
 A new role is a `provision_NAME` function in `guest/yolovm-guest` with matching
-`status_NAME_apps`, `status_NAME_boot` and `status_NAME_settings` functions,
+`status_NAME_apps`, `status_NAME_boot`, `status_NAME_signin` and `status_NAME_settings` functions,
 plus its files under `guest/roles/NAME/`.
 
 ## Versions

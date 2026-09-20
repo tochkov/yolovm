@@ -7,9 +7,9 @@
 #   yolovm create NAME [--role dev] [--cpu 4] [--mem 8] [--disk 50]
 #                                  launch a VM, provision it, restart it; sizes in GiB
 #   yolovm provision NAME [ROLE]   push the guest bundle and run it; safe to repeat
-#   yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude]
-#                                  sign in to Tailscale, GitHub and Claude where missing, or skip some;
-#                                  print the desktop login
+#   yolovm auth NAME [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
+#                                  sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
+#                                  print the desktop login, then restart the VM after successful auth
 #   yolovm doctor [NAME]           check this host, or a VM
 #   yolovm desktop NAME            print the remote desktop login; open the VM's screen when this host has one
 #   yolovm sh NAME [CMD...]        shell in the VM as ubuntu
@@ -22,7 +22,7 @@
 # the Tailscale admin console (see README.md).
 set -euo pipefail
 
-VERSION=0.4.1
+VERSION=0.5.0
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 IMAGE=images:ubuntu/26.04/desktop # copied once into the local store as $ALIAS
 ALIAS=yolovm-desktop POOL=yolovm-storage NET=yolovmbr0 PROFILE=yolovm-dev ACL=yolovm-internet
@@ -141,6 +141,14 @@ provision() {
   incus exec "$name" --env YOLOVM_VERSION=$VERSION -- $GUEST/yolovm-guest provision $role
 }
 
+auth() {
+  need_name "${1:-}"; local name=$1; shift
+  incus exec -t "$name" -- $GUEST/yolovm-guest auth "$@"
+  say "Restarting $name after authentication"
+  restart "$name"
+  say "$name is ready"
+}
+
 doctor_host() {
   local n=0 fail=0
   ok() { printf '  ok   %s\n' "$*"; }
@@ -177,7 +185,7 @@ case ${1:-} in
   host) [ "${2:-}" = init ] || die "usage: yolovm host init [--keep-awake] [--lock-after MIN]"; shift 2; host_init "$@" ;;
   create) shift; create "$@" ;;
   provision) provision "${2:-}" "${3:-}"; say "Restart to apply: yolovm restart $2" ;;
-  auth) need_name "${2:-}"; incus exec -t "$2" -- $GUEST/yolovm-guest auth "${@:3}" ;;
+  auth) shift; auth "$@" ;;
   doctor) if [ -n "${2:-}" ]; then incus exec "$2" -- $GUEST/yolovm-guest status; else doctor_host; fi ;;
   desktop) desktop "${2:-}" ;;
   sh) shift; shell "$@" ;;

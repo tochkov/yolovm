@@ -3,8 +3,9 @@
 # it over `incus exec`; it also works from a shell inside the VM.
 #
 #   yolovm-guest provision [ROLE]   install and configure; safe to run again
-#   yolovm-guest auth [--no-tailscale] [--no-gh] [--no-claude]
-#                                   sign in to Tailscale, GitHub and Claude where missing, or skip some; set the desktop password
+#   yolovm-guest auth [--no-tailscale] [--no-gh] [--no-claude] [--no-chatgpt]
+#                                   sign in to Tailscale, GitHub, Claude and ChatGPT (dev role) where missing;
+#                                   set the desktop password; the host command restarts the VM afterwards
 #   yolovm-guest desktop            print the remote desktop login, setting its password the first time
 #   yolovm-guest status             check apps, boot services, logins, settings, network
 #   yolovm-guest poweroff           close desktop apps cleanly, then power off
@@ -20,12 +21,14 @@ set -euo pipefail
 HERE=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 U=ubuntu; H=/home/$U; PROJ=$H/proj
 ROLE_FILE=/etc/yolovm/role
+CHATGPT_CODEX=/usr/lib/chatgpt/resources/codex
 TAG=tag:yolovm
 export DEBIAN_FRONTEND=noninteractive
 APT="apt-get -q -o DPkg::Lock::Timeout=300" # wait out first-boot unattended upgrades
 
 say() { printf '\n== %s\n' "$*"; }
 as_user() { runuser -u $U -- env HOME=$H XDG_RUNTIME_DIR=/run/user/1000 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus PATH=$H/.local/bin:/usr/local/bin:/usr/bin:/bin "$@"; }
+chatgpt_codex() { as_user env CODEX_HOME="$H/.codex" "$CHATGPT_CODEX" "$@"; }
 user_dir() { as_user install -d "$@"; } # as ubuntu, so every new path component is theirs
 user_file() { install -o $U -g $U -m 0644 "$1" "$2"; }
 user_unit() { systemctl --user -M $U@ "$@"; }
@@ -146,18 +149,21 @@ provision() {
 }
 
 # --------------------------------------------------------------------- auth
-auth() { # --no-tailscale, --no-gh and --no-claude each skip a sign-in
-  local tailscale=1 gh=1 claude=1 a
+auth() { # each --no-SERVICE option skips that sign-in
+  local tailscale=1 gh=1 claude=1 chatgpt=1 role a
   for a in "$@"; do case $a in
     --no-tailscale) tailscale=0 ;;
     --no-gh) gh=0 ;;
     --no-claude) claude=0 ;;
+    --no-chatgpt) chatgpt=0 ;;
     *) echo "unknown option: $a" >&2; exit 1 ;;
   esac; done
   # `if`, not `||`: bash suspends errexit inside a function called from a || list
   if [ $tailscale = 1 ]; then auth_tailscale; fi
   if [ $gh = 1 ]; then auth_github; fi
   if [ $claude = 1 ]; then auth_claude; fi
+  role=$(cat $ROLE_FILE 2>/dev/null || echo none)
+  if [ $chatgpt = 1 ] && [ "$role" = dev ]; then auth_chatgpt; fi
   say "Remote desktop"
   desktop
 }
@@ -186,6 +192,21 @@ auth_claude() {
   say "Claude"
   if as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then echo "already signed in"
   else as_user claude auth login; fi
+}
+auth_chatgpt() {
+  say "ChatGPT"
+  if [ ! -x "$CHATGPT_CODEX" ]; then
+    echo "ChatGPT's bundled Codex is missing. Run yolovm provision NAME from the host, then rerun auth." >&2
+    return 1
+  fi
+  if chatgpt_signed_in; then echo "already signed in"
+  else
+    chatgpt_codex login --device-auth
+    if ! chatgpt_signed_in; then
+      echo "ChatGPT sign-in was not saved for $U. Rerun auth." >&2
+      return 1
+    fi
+  fi
 }
 
 # ------------------------------------------------------------------ desktop
@@ -222,6 +243,7 @@ claude_bypasses() { python3 -c "import json;assert json.load(open('$H/.claude/se
 claude_dialogs_answered() { python3 -c "import json;d=json.load(open('$H/.claude.json'));assert d['hasCompletedOnboarding'] and d['remoteDialogSeen'] and d['projects']['$PROJ']['hasTrustDialogAccepted']"; }
 claude_chrome_default() { python3 -c "import json;d=json.load(open('$H/.claude.json'));assert d['claudeInChromeDefaultEnabled'] and d['hasCompletedClaudeInChromeOnboarding']"; }
 claude_signed_in() { as_user claude auth status 2>/dev/null | grep -q '"loggedIn": true'; }
+chatgpt_signed_in() { chatgpt_codex login status 2>&1 | grep -qx 'Logged in using ChatGPT'; }
 tailscale_tagged() { tailscale status --json | python3 -c "import json,sys;s=json.load(sys.stdin);assert s['BackendState']=='Running' and '$TAG' in (s['Self'].get('Tags') or [])"; }
 online_user_peer() { tailscale status --json 2>/dev/null | python3 -c "import json,sys;print(next((p['TailscaleIPs'][0]+' '+p['HostName'] for p in (json.load(sys.stdin).get('Peer') or {}).values() if p.get('Online') and not p.get('Tags')),''))" 2>/dev/null; }
 keyring_opens() { as_user gdbus call --session --dest org.freedesktop.secrets --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.Unlock "['/org/freedesktop/secrets/collection/Default_5fkeyring']" | grep -q "objectpath '/')"; } # unlocks with no prompt
@@ -267,6 +289,7 @@ status() {
   check "tailscale connected with $TAG" tailscale_tagged
   check "github signed in" as_user gh auth status
   check "claude signed in" claude_signed_in
+  role_checks signin
   check "remote desktop password set" test -n "$(rdp_password)"
   section "Settings"
   check "agent instructions present" test -s $H/.claude/CLAUDE.md -a -s $H/.codex/AGENTS.md
@@ -291,11 +314,15 @@ status() {
 
 status_dev_apps() {
   check "chatgpt installed" dpkg -s chatgpt
+  check "chatgpt bundled codex installed" test -x "$CHATGPT_CODEX"
   check "chrome installed" dpkg -s google-chrome-stable
 }
 status_dev_boot() {
   check "chatgpt running" pgrep -u $U -x ChatGPT
   check "chrome running" pgrep -u $U -x chrome
+}
+status_dev_signin() {
+  check "chatgpt signed in" chatgpt_signed_in
 }
 status_dev_settings() {
   check "chrome policies installed" test -f /etc/opt/chrome/policies/managed/yolovm-extensions.json -a -f /etc/opt/chrome/policies/managed/yolovm-settings.json
