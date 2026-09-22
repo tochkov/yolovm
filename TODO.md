@@ -20,6 +20,13 @@
   machine identity first.
 - [ ] Optional: `yolovm tailnet` to apply `host/tailscale-policy.json` through
   the Tailscale API instead of the admin console.
+- [ ] Discuss Tailscale's place in future onboarding alongside the broader
+  auth, networking and CLI design. Consider moving detailed setup out of the
+  README into `docs/tailscale.md` or `TAILSCALE_SETUP.md`, keeping a short link
+  for optional setup, and showing `yolovm auth NAME --no-tailscale` in the main
+  quickstart. Account for starting without Tailscale and enabling it later.
+  Revisit auth defaults and the `--no-*` flags in that wider discussion. This
+  is an open proposal to discuss with the other moving parts before implementing.
 - [ ] When the stable channel passes 2.1.278, look at `claude remote-control
   --chrome`: it appeared between 2.1.272 and 2.1.278 and only forwards `--chrome`
   to the sessions the server starts, which `CLAUDE_CODE_ENABLE_CFC=1` in the unit
