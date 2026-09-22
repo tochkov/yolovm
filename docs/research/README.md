@@ -8,6 +8,7 @@ maintained documentation.
 
 | Date | Report | Question it answers |
 | --- | --- | --- |
+| 2026-09-20 | [Market feasibility and community demand](market-2026-09-20/REPORT.md) | Whether a free yolovm tool has a useful audience, what users request and struggle with, current alternatives, and what to validate before expanding; includes four evidence ledgers |
 | 2026-09-17 | [YOLO_RESEARCH.md](YOLO_RESEARCH.md) | Incus, Multipass, Docker Sandboxes or libvirt for the original draft, and when a headless sandbox would do |
 | 2026-09-17 | [NATIVE_AGENT_RESEARCH.md](NATIVE_AGENT_RESEARCH.md) | Whether the vendors' native browser and desktop integrations survive a split between a host app and a remote agent; why a full desktop VM |
 | 2026-09-17 | [APP_BROWSER_EVIDENCE.md](APP_BROWSER_EVIDENCE.md) | Static evidence from the installed ChatGPT app that its browser integration is local-host only |
